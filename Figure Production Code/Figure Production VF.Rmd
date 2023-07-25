@@ -1,0 +1,2902 @@
+---
+title: "Figure Production VF"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Install Necessary Packages
+```{r}
+#install.packages("ggplot2")
+library(ggplot2)
+
+#install.packages("ggpubr")
+library(ggpubr)
+
+#install.packages("ggprism")
+library(ggprism)
+
+#BiocManager::install("edgeR")
+library(edgeR)
+
+#install.packages("plotly")
+library(plotly)
+
+#install.packages("corrplot")
+library(corrplot)
+
+#install.packages("factoextra")
+library(factoextra)
+
+#install.packages("FactoMineR")
+library(FactoMineR)
+
+#install.packages("dplyr")
+library(dplyr)
+
+#install.packages("gplots")
+library(gplots)
+```
+
+# Load in Raw Count Data + Donor Metadata
+
+PA Count Data
+```{r}
+Spike_In_Data <- read.csv("./Data_Files/RNAseq__sputum_metals_counts.csv")
+Spike_In_Data <- Spike_In_Data[,c(2:13, 15:46)] #Get rid of sputum sample 105 with very poor sequencing depth 
+rownames(Spike_In_Data) <- Spike_In_Data[,1]
+Spike_In_Data <- Spike_In_Data[,-1]
+
+View(Spike_In_Data) 
+```
+
+Donor Metadata
+```{r}
+Metadata <- read.csv("./Data_Files/Donor_Metadata_V2.csv")
+View(Metadata)
+```
+
+# Table 1. Clinical Characteristics of CF Donors
+This table was produced outside of R
+# Figure 1(A,B) + Table S1. DGE + Pathway Activation Analysis (CF Sputum vs. ASM)
+
+Create DGE object and perform normalization steps
+```{r}
+View(Spike_In_Data) #all spike-in samples (including ASM and M63, sputum with or without metal treatment)
+DGE <- DGEList(counts = Spike_In_Data, remove.zeros = TRUE, genes = rownames(Spike_In_Data))
+DGE$samples
+
+colnames(DGE$counts)
+
+Group <- factor(c(rep(c("ASM_M", "ASM"), 3), rep("M63", 3), rep(c("Spu_M", "Spu"), 17)))
+data.frame(Sample = colnames(DGE$counts), Group)
+design <- model.matrix(~ 0 + Group)
+rownames(design) <- colnames(DGE)
+design
+
+keep <- filterByExpr(DGE, design, min.count = 10, min.total.count = 15)
+DGE <- DGE[keep, ] # keep only well-expressed genes
+
+DGE <- calcNormFactors(DGE) # adding information to DGEList object!
+DGE$samples # normalization factors have been added
+
+DGE <- estimateGLMCommonDisp(DGE, design, verbose = TRUE) 
+
+# calculate dispersion trend based on gene abundance
+DGE <- estimateGLMTrendedDisp(DGE, design) 
+
+# calculate separate dispersion for each gene
+DGE <- estimateGLMTagwiseDisp(DGE, design) 
+
+#Visualize dispersion
+plotBCV(DGE)
+
+#Visualize normalized data
+CPM <- cpm(DGE, normalized.lib.sizes = TRUE, log = TRUE)
+CPM <- as.data.frame(CPM)
+boxplot(CPM, las = 2, ylab = "log2 CPM", main = "Normalized Data")
+
+```
+
+Run differential gene expression analysis
+```{r}
+fit <- glmQLFit(DGE, design)
+colnames(fit$coefficients)
+qlf1 <- glmQLFTest(fit, contrast = c(-1,0,0,1,0)) #specify the comparison of interest
+topTags(qlf1)
+
+```
+
+Visualize differential gene expression with volcano plots
+```{r}
+Results1 <- as.data.frame(topTags(qlf1, n = dim(DGE)[1]))
+DE <- Results1[Results1$PValue < 0.05 & abs(Results1$logFC) > 1, ]
+detags2 <- DE$genes
+
+DE2 <- Results1[Results1$FDR < 0.05,]
+
+
+plot(-log10(Results1$PValue) ~ Results1$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment", xlim = c(-10, 10))
+
+points(-log10(Results1$PValue[Results1$genes %in% detags2]) ~ 
+        Results1$logFC[Results1$genes %in% detags2], 
+        col = "red", pch = 16)
+
+#An interactive plotly volcano plot
+VP <- plot_ly(type = "scatter", Results1, x = Results$logFC, y = -log10(Results1$PValue),text = ~paste("log2FC: ", Results1$logFC, '$<br>-log10(PValue):',-log10(Results1$PValue), '$<br>Locus ID:', Results1$genes)) %>%
+  layout(xaxis = list(title="log2FC"), yaxis = list(title="-log10(PValue)"))
+                                                       
+VP <- add_trace(VP, x = DE$logFC, y = -log10(DE$PValue), type = "scatter", mode = "markers", size = 50, color = I("orange"), inherit = FALSE, text = ~paste("log2FC: ", DE$logFC, '$<br>-log10(PValue):', -log10(DE$PValue), '$<br>Locus ID:', DE$genes))
+                                                                                                                            
+VP                
+```
+
+Export out table (Table S1)
+```{r}
+write.csv(Results1, "Sputum-ASM.csv")
+```
+
+ESKAPE Act PLUS GO Term Activation/Repression Analysis (Figure 1B)
+```{r}
+write.csv(Results1[,1:2], "Sputum-ASM.csv")
+
+#Convert PA locus IDs to Uniprot IDs using the Uniprot ID mapping tool ; then load data into ESKAPE Act PLUS to identify significantly active/repressed KEGG/GO terms
+Sputum_ASM_Mapping <- read.csv("./Data_Files/Sputum-ASM Mapping.csv")
+colnames(Sputum_ASM_Mapping)[1] <- "genes"
+
+ESKAPE_Import_ASM <- merge(Results1, Sputum_ASM_Mapping, by = "genes")
+ESKAPE_Import_ASM <- ESKAPE_Import_ASM[!duplicated(ESKAPE_Import_ASM$genes),]
+ESKAPE_Import_ASM <- ESKAPE_Import_ASM[,c(7,2)]
+
+write.csv(ESKAPE_Import_ASM, "ESKAPE_Import_ASM.csv") #These results were loaded into the ESKAPE Act application to identify differentially active or repressed go terms
+```
+
+PCA Plot to visualize systematic differences in gene expression (Figure 1A) 
+```{r}
+Counts <- Spike_In_Data[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+
+#Simple normalization (just normalize by library size)
+Counts <- Counts
+MinVals <- apply(Counts, 1, min)
+Log_Counts <- log2(Counts[MinVals > 0,])
+
+SampleMedian <- apply(Log_Counts, 2, median) #Calculate the median of each sample
+GrandMedian <- mean(SampleMedian) #Calculate the mean of the sample medians  
+CorrectionFactors <- GrandMedian - SampleMedian #Calculate correction factors - if sample median is above the grand median, negative correction factor will be applied to all counts ; if sample median is below the grand median, a positive correction factor will be applied to all counts
+
+Norm_Counts <- Log_Counts
+for(col in colnames(Log_Counts)){
+  Norm_Counts[, col] <- Log_Counts[,col] + CorrectionFactors[col]
+} 
+
+Norm_Counts_T <- as.data.frame(t(Norm_Counts))
+Norm_Counts_T$Media <- as.factor(c(rep("ASM", 3), rep("Sputum", 17)))
+
+View(Norm_Counts_T)
+
+res.pca <- PCA(Norm_Counts_T[,-5552], graph = FALSE)
+
+fviz_pca_ind(res.pca,
+             #label = "none", # hide individual labels
+             repel = TRUE,
+             habillage = Norm_Counts_T$Media, # color by groups
+             palette = c("#FC4E07", "#00AFBB"),
+             addEllipses = TRUE # Concentration ellipses
+             )
+```
+
+# Table S2. Top differentially expressed genes in CF sputum relative to ASM 
+
+Take DGE results from figure 1 (spike-in sputum vs. ASM comparison)
+```{r}
+View(Results1)
+```
+
+Filter so that we have statistically significant genes that are in the top 10% in terms of both FC and CPM
+Gather genes from ASM comparison with positive fold change (more highly expressed in CF sputum vs. ASM)
+```{r}
+ResultsA <- Results1[Results1$logFC > 0,]
+
+FC_CutoffA <- quantile(ResultsA$logFC, probs = seq(0.1, 0.9, by = 0.1))[[9]] #2.276619  is 90th percentile
+CPM_CutoffA <- quantile(ResultsA$logCPM, probs = seq(0.1, 0.9, by = 0.1))[[9]] #8.92354 is 90th percentile
+
+Results_FC_FilteredA <- ResultsA[ResultsA$logFC >= FC_CutoffA,]
+Results_CPM_FilteredA <- Results_FC_FilteredA[Results_FC_FilteredA$logCPM >= CPM_CutoffA,]
+
+Significant_ResultsA <- Results_CPM_FilteredA[Results_CPM_FilteredA$FDR <= 0.05,] #58 genes
+
+View(Significant_ResultsA)
+
+write.csv(Significant_ResultsA, "Table1A.csv")
+```
+
+In addition to genes that define growth in CF sputum because they are substantially more active in real CF sputum than artificial lab media, there are also genes that are highly expressed in CF sputum, but also expressed in lab media. We want to capture these too. 
+
+To keep the list manageable, stick to the top 50 genes, and see if there are any genes that did not pop up on the ASM  comparison (with positive fold change)
+```{r}
+#Gather up spike-in samples 
+colnames(Spike_In_Data)
+Counts <- Spike_In_Data[,c(11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+
+#Simple normalization (just normalize by library size)
+Counts <- Counts
+MinVals <- apply(Counts, 1, min)
+Log_Counts <- log2(Counts[MinVals > 0,])
+
+SampleMedian <- apply(Log_Counts, 2, median) #Calculate the median of each sample
+GrandMedian <- mean(SampleMedian) #Calculate the mean of the sample medians  
+CorrectionFactors <- GrandMedian - SampleMedian #Calculate correction factors - if sample median is above the grand median, negative correction factor will be applied to all counts ; if sample median is below the grand median, a positive correction factor will be applied to all counts
+
+Norm_Counts_X <- Log_Counts
+for(col in colnames(Log_Counts)){
+  Norm_Counts_X[, col] <- Log_Counts[,col] + CorrectionFactors[col]
+} 
+
+colnames(Norm_Counts_X) <- c("Spu102", "Spu106", "Spu108", "Spu120", "Spu122", "Spu124", "Spu125", "Spu133", "Spu138", "Spu145", "Spu153", "Spu203", "Spu204", "Spu220", "Spu233", "Spu239", "Spu243")
+
+boxplot(Norm_Counts_X) #Data is normalized
+
+#Calculate mean counts for each gene
+Norm_Counts_X$Mean <- NA
+
+for (i in 1:nrow(Norm_Counts_X)) {
+  Norm_Counts_X$Mean[i] <- mean(unlist(Norm_Counts_X[i,c(1:17)]))
+}
+
+#Select out the top 50 most abundant genes
+Filtered_Abundance <- Norm_Counts_X[order(-Norm_Counts_X$Mean),][1:50,]
+write.csv(Filtered_Abundance, "Table1E.csv")
+```
+
+# Table 2. Abundant and differentially expressed 'core genes' (not related to translation, ATP production, or cell division)
+This table was produced outside of R - the GO terms of excluded genes are described in the methods of the associated manuscript
+# Figure 1C. Heat maps showing expression of 'core genes' across samples
+```{r}
+View(Norm_Counts)
+
+Core_Gene_List <- c("PA4837", "PA4468", "PA4226", "PA4221", "PA2386", "PA4225", "PA2424", "PA4470", "PA2399", "PA2400", "PA2402", "PA4670", "PA4748", "PA2685", "PA0524", "PA4669", "PA5568", "PA3006", "PA4243", "PA4669", "PA2853", "PA1777", "PA4385", "PA4525", "PA4761", "PA4542", "PA0762", "PA2620", "PA5170", "PA1092", "PA5178", "PA2623", "PA5171", "PA0763", "PA1596", "PA1803")
+  
+Norm_Counts_Core_Genes <- Norm_Counts[rownames(Norm_Counts) %in% Core_Gene_List,]
+
+colnames(Norm_Counts_Core_Genes) <- c("ASM1", "ASM2", "ASM3", "Spu102", "Spu106", "Spu108", "Spu120", "Spu122", "Spu124", "Spu125", "Spu133", "Spu138", "Spu145", "Spu153", "Spu203", "Spu204", "Spu220", "Spu233", "Spu239", "Spu243")
+
+heatmap(as.matrix(Norm_Counts_Core_Genes))
+
+### 
+
+#Now create a separate heat map for those core genes that are highly differentially expressed vs. just abundant in CF sputum:
+DE_List <- c("PA4837", "PA4468", "PA4226", "PA4221", "PA2386", "PA4225", "PA2424", "PA4470", "PA2402", "PA2399", "PA2400", "PA4670", "PA4748", "PA2685", "PA0524", "PA4669", "PA5568", "PA3006")
+AB_List <- c("PA4243", "PA2853", "PA1777", "PA4385", "PA4525", "PA4761", "PA4542", "PA0762", "PA2620", "PA5170", "PA1092", "PA5178", "PA2623", "PA5171", "PA0763", "PA1596", "PA1803")
+
+Norm_Counts_Core_Genes_DE <- Norm_Counts_Core_Genes[rownames(Norm_Counts_Core_Genes) %in% DE_List,]
+Norm_Counts_Core_Genes_AB <- Norm_Counts_Core_Genes[rownames(Norm_Counts_Core_Genes) %in% AB_List,]
+
+colnames(Norm_Counts_Core_Genes_DE) <- c("ASM1", "ASM2", "ASM3", "Spu102", "Spu106", "Spu108", "Spu120", "Spu122", "Spu124", "Spu125", "Spu133", "Spu138", "Spu145", "Spu153", "Spu203", "Spu204", "Spu220", "Spu233", "Spu239", "Spu243")
+colnames(Norm_Counts_Core_Genes_AB) <- c("ASM1", "ASM2", "ASM3", "Spu102", "Spu106", "Spu108", "Spu120", "Spu122", "Spu124", "Spu125", "Spu133", "Spu138", "Spu145", "Spu153", "Spu203", "Spu204", "Spu220", "Spu233", "Spu239", "Spu243")
+
+rownames(Norm_Counts_Core_Genes_DE) <- c("norB", "pvdA", "pvdD", "pvdJ", "pvdI", "pvdL", "vgrG1c", "psrA", "fptA", "pchF", "pchE", "sodA", "fumC2", "ispE", "prs", "tpiA", "cntO", "yidC")
+
+rownames(Norm_Counts_Core_Genes_AB) <- c("algU", "mucA", "fliC", "htpG", "oprF", "lon", "clpA", "icd", "oprI", "secY", "groEL", "pilA", "clpB", "dnaK", "arcD", "arcA", "PA5178")
+
+
+heatmap(as.matrix(Norm_Counts_Core_Genes_DE))
+heatmap(as.matrix(Norm_Counts_Core_Genes_AB))
+
+```
+
+
+# Table S3 + Table 3. ADAGE constructed correlated gene sets based on the genes in table 2
+
+Import Raw Gene Sets
+```{r}
+Raw_Gene_Sets <- read.csv("./Data_Files/Raw_Gene_Sets.csv")
+colnames(Raw_Gene_Sets) <- c("Core_Gene", "Gene_Set")
+View(Raw_Gene_Sets)
+
+#Have to make these into lists of strings - just do it manually
+cntO_GS <- c("PA5535", "PA4065", "PA4837", "PA4834", "PA4836", "PA5536", "PA5540", "PA1922", "PA4835", "PA0781")
+sodA_GS <- c("PA4467", "PA4570", "PA4468", "PA2034", "PA4469", "PA4471", "PA2033", "PA3407", "PA4470", "PA0672")
+pchE_GS <- c("PA4228", "PA4231", "PA4226", "PA4218", "PA4225", "PA4230", "PA4221", "PA4229", "PA4224", "PA4223")
+fptA_GS <- c("PA4229", "PA4231", "PA4221", "PA4225", "PA4228", "PA4224", "PA4223", "PA4220", "PA4230", "PA4226")
+pvdA_GS <- c("PA2412", "PA2413", "PA2386", "PA2394", "PA2395", "PA2397", "PA2411", "PA2385", "PA2396", "PA2427")
+pchF_GS <- c("PA4224", "PA4228", "PA4225", "PA4229", "PA4226", "PA4230", "PA4221", "PA4218", "PA4231", "PA4223")
+pvdL_GS <- c("PA2395", "PA2424", "PA2385", "PA2394", "PA2452", "PA2425", "PA2412", "PA2402", "PA2411", "PA2413")
+fumC2_GS <- c("PA1323", "PA2071", "PA0853", "PA3691", "PA5483", "PA3692", "PA0854", "PA4972", "PA4876", "PA1324")
+pvdI_GS <- c("PA2400", "PA2393", "PA2402", "PA2394", "PA2401", "PA2399", "PA2385", "PA2411", "PA2424", "PA2413")
+pvdD_GS <- c("PA2397", "PA2392", "PA2399", "PA2386", "PA2400", "PA2402", "PA2398", "PA2427", "PA2401", "PA2396")
+pvdJ_GS <- c("PA2402", "PA2396", "PA2400", "PA2427", "PA2401", "PA2392", "PA2398", "PA2386", "PA2399", "PA2397")
+prs_GS <- c("PA4670", "PA1800", "PA4671", "PA4432", "PA4244", "PA4240", "PA4243", "PA0579", "PA4433", "PA4239")
+tpiA_GS <- c("PA2970", "PA4746", "PA4748", "PA2971", "PA4276", "PA3744", "PA1800", "PA3745", "PA3743", "PA4747")
+vgrG4_GS <- c("PA0080", "PA0086", "PA2685", "PA0085", "PA2684", "PA0088", "PA0082", "PA0076", "PA0087", "PA0084")
+norB_GS <- c("PA0521", "PA0520", "PA0524", "PA0514", "PA0523", "PA3391", "PA3393", "PA3394", "PA0525", "PA3392")
+ipk_GS <- c("PA5128", "PA0767", "PA0904", "PA5045", "PA4669", "PA3471", "PA2627", "PA5362", "PA4449", "PA4459")
+yidC_GS <- c("PA5568", "PA4480", "PA4665", "PA4563", "PA4932", "PA0380", "PA3827", "PA3821", "PA3820", "PA3822")
+psrA_GS <- c("PA3013", "PA0506", "PA3006", "PA3014", "PA2953")
+secY_GS <- c("PA4262", "PA1800", "PA4243", "PA4245", "PA4239", "PA4257", "PA4273", "PA4265", "PA4244", "PA4247")
+oprI_GS <- c("PA2742", "PA1592", "PA2853", "PA0456", "PA1777", "PA5253", "PA0376", "PA2966", "PA4922", "PA2738")
+oprF_GS <- c("PA2743", "PA1802", "PA1777", "PA4265", "PA2742", "PA4922", "PA0139", "PA4237", "PA2853", "PA4407")
+groEL_GS <- c("PA4762", "PA1589", "PA4385", "PA5556", "PA4386", "PA5054", "PA4269", "PA2952", "PA4761", "PA1596")
+pilA_GS <- c("PA2730", "PA4527", "PA4525", "PA2732", "PA2731", "PA2735", "PA2736", "PA1939", "PA2733", "PA2734")
+dnaK_GS <- c("PA5054", "PA0779", "PA4761", "PA5053", "PA4762", "PA4760", "PA4542", "PA4386", "PA1596", "PA4385")
+clpB_GS <- c("PA1596", "PA4762", "PA4542", "PA4387", "PA4761", "PA0779", "PA5054", "PA3126", "PA5053", "PA4760")
+algU_GS <- c("PA1592", "PA0762", "PA5261", "PA0763", "PA2621", "PA0833", "PA3031", "PA3385", "PA3819", "PA2738")
+clpA_GS <- c("PA3349", "PA2620", "PA1802", "PA2622", "PA2621", "PA0763", "PA1728", "PA1454", "PA2586", "PA4751")
+arcD_GS <- c("PA5427", "PA4067", "PA5170", "PA3337", "PA5171", "PA1789", "PA4352", "PA4328", "PA5172", "PA5173")
+fliC_GS <- c("PA1093", "PA1086", "PA1092", "PA1089", "PA1095", "PA1087", "PA1088", "PA1090", "PA1094", "PA1096")
+PA5178_GS <- c("PA5060", "PA2622", "PA5178", "PA5288", "PA0329", "PA3040", "PA3031", "PA5212", "PA1592", "PA4607")
+icd_GS <- c("PA2951", "PA1580", "PA2623", "PA5013", "PA1777", "PA2952", "PA4407", "PA4944", "PA4751", "PA1583")
+arcA_GS <- c("PA5170", "PA4352", "PA5171", "PA3309", "PA5172", "PA5427", "PA1789", "PA0141", "PA5173", "PA4067")
+mucA_GS <- c("PA2853", "PA0764", "PA0762", "PA0763", "PA2620", "PA3385", "PA1777", "PA1592", "PA5261", "PA3819")
+htpG_GS <- c("PA4761", "PA4760", "PA1596", "PA4542", "PA4762", "PA0779", "PA4385", "PA4061", "PA5054", "PA5053")
+lon_GS <- c("PA4751", "PA4943", "PA1803", "PA4386", "PA1802", "PA3813", "PA1847", "PA4944", "PA4385", "PA4761")
+```
+
+Create consolidated gene sets
+```{r}
+#Create list of all the gene sets
+GS_List <- list(cntO_GS, sodA_GS, pchE_GS, fptA_GS, pvdA_GS, pchF_GS, pvdL_GS, fumC2_GS, pvdI_GS, pvdD_GS, pvdJ_GS, prs_GS, tpiA_GS, vgrG4_GS, norB_GS, ipk_GS, yidC_GS, psrA_GS, secY_GS, oprI_GS, oprF_GS, groEL_GS, pilA_GS, dnaK_GS, clpB_GS, algU_GS, clpA_GS, arcD_GS, fliC_GS, PA5178_GS, icd_GS, arcA_GS, mucA_GS, htpG_GS, lon_GS)
+names(GS_List) <- Raw_Gene_Sets[,1]
+View(GS_List)
+
+GS_Matches <- vector(mode='list', length=40)
+
+#For each gene set, want to find all gene sets with matching genes
+for (a in 1:length(GS_List)) {
+  Vec <- c()
+  for (i in 1:length(GS_List)) {
+    Vec[i] <- sum(GS_List[[a]] %in% GS_List[[i]])
+    }
+  GS_Matches[[a]] <- Vec
+}
+
+names(GS_Matches)  <- Raw_Gene_Sets[,1]
+View(GS_Matches)
+
+#Which gene sets share more than 5 genes?
+names(GS_Matches)
+
+which(GS_Matches[["cntO / zrmA "]] >= 5) #1
+GS_Matches[c(1)]
+cntO_Shared <- NA
+
+which(GS_Matches[["sodA / sodM"]] >= 5) #2
+GS_Matches[c(2)]
+sodA_Shared <- NA
+
+which(GS_Matches[["pchE "]] >= 5) #3,4,6
+GS_Matches[c(3,4,6)]
+pchE_Shared <- c("pchE", "fptA", "pchF")
+
+which(GS_Matches[["fptA "]] >= 5) #3,4,6
+GS_Matches[c(3,4,6)]
+fptA_Shared <- c("pchE", "fptA", "pchF")
+
+which(GS_Matches[["pvdA "]] >= 5) #5,7
+GS_Matches[c(5,7)]
+pvdA_Shared <- c("pvdA", "pvdL")
+
+which(GS_Matches[["pchF"]] >= 5) #3,4,6
+GS_Matches[c(3,4,6)]
+pchF_Shared <- c("pchE", "fptA", "pchF")
+
+which(GS_Matches[["pvdL"]] >= 5) #5,7
+GS_Matches[c(5,7)]
+pvdL_Shared <- c("pvdA", "pvdL")
+
+which(GS_Matches[["fumC2"]] >= 5) #8
+GS_Matches[c(8)]
+fumC2_Shared <- NA
+
+which(GS_Matches[["pvdI"]] >= 5) #7,9
+GS_Matches[c(7,9)]
+fumC2_Shared <- c("pvdL", "pvdI")
+
+which(GS_Matches[["pvdD"]] >= 5) #10,11
+GS_Matches[c(10,11)]
+pvdD_Shared <- c("pvdD", "pvdJ")
+
+which(GS_Matches[["pvdJ "]] >= 5) #10,11
+GS_Matches[c(10,11)]
+pvdJ_Shared <- c("pvdD", "pvdJ")
+
+which(GS_Matches[["prs"]] >= 5) #12
+GS_Matches[c(12)]
+prs_Shared <- c("prs")
+
+which(GS_Matches[["tpiA"]] >= 5) #13
+GS_Matches[c(13)]
+tpiA_Shared <- NA
+
+which(GS_Matches[["vgrG1c / vgrG4"]] >= 5) #14
+GS_Matches[c(14)]
+vgrG4_Shared <- NA
+
+which(GS_Matches[["norB"]] >= 5) #15
+GS_Matches[c(15)]
+norB_Shared <- NA
+
+which(GS_Matches[["ispE / ipk / ychB"]] >= 5) #16
+GS_Matches[c(16)]
+ipk_Shared <- NA
+
+which(GS_Matches[["yidC"]] >= 5) #17
+GS_Matches[c(17)]
+yidC_Shared <- NA
+
+which(GS_Matches[["psrA"]] >= 5) #18
+GS_Matches[c(18)]
+psrA_Shared <- NA
+
+which(GS_Matches[["secY"]] >= 5) #19
+GS_Matches[c(19)]
+secY_Shared <- c("secY")
+
+which(GS_Matches[["oprI"]] >= 5) #20
+GS_Matches[c(20)]
+oprI_Shared <- NA
+
+which(GS_Matches[["oprF"]] >= 5) #21
+GS_Matches[c(21)]
+oprF_Shared <- NA
+
+which(GS_Matches[["groEL / groL / mopA"]] >= 5) #22,24,34
+GS_Matches[c(22,24,34)]
+groEL_Shared <- c("groEL", "dnaK", "htpG")
+
+which(GS_Matches[["pilA / fimA "]] >= 5) #23
+GS_Matches[c(23)]
+pilA_Shared <- NA
+
+which(GS_Matches[["dnaK "]] >= 5) #22,24,25,34
+GS_Matches[c(22,24,25,34)]
+dnaK_Shared <- c("groEL", "dnaK", "clpB", "htpG")
+
+which(GS_Matches[["clpB "]] >= 5) #24,25,34
+GS_Matches[c(24,25,34)]
+clpB_Shared <- c("dnaK", "clpB", "htpG")
+
+which(GS_Matches[["algU / algT"]] >= 5) #26,33
+GS_Matches[c(26,33)]
+algU_Shared <- c("algU", "mucA")
+
+which(GS_Matches[["clpA"]] >= 5) #27
+GS_Matches[c(27)]
+clpA_Shared <- NA
+
+which(GS_Matches[["arcD"]] >= 5) #28,32
+GS_Matches[c(28,32)]
+arcD_Shared <- c("arcD", "arcA")
+
+which(GS_Matches[["fliC"]] >= 5) #35
+GS_Matches[c(35)]
+fliC_Shared <- NA
+
+which(GS_Matches[["PA5178"]] >= 5) #30
+GS_Matches[c(30)]
+PA5178_Shared <- NA
+
+which(GS_Matches[["icd"]] >= 5) #31
+GS_Matches[c(31)]
+icd_Shared <- NA
+
+which(GS_Matches[["arcA"]] >= 5) #28,32
+GS_Matches[c(28,32)]
+arcA_Shared <- c("arcD","arcA")
+
+which(GS_Matches[["mucA"]] >= 5) #26,33
+GS_Matches[c(26,33)]
+mucA_Shared <- c("algU", "mucA")
+
+which(GS_Matches[["htpG"]] >= 5) #22,24,25,34
+GS_Matches[c(22,24,25,34)]
+htpG_Shared <- c("groEL", "dnaK", "clpB", "htpG")
+
+which(GS_Matches[["lon"]] >= 5) #35
+GS_Matches[c(35)]
+lon_Shared <- NA
+
+```
+
+Final pruned gene sets
+```{r}
+#Went to check and make sure that genes are actually correlated in our spike-in sputum data
+
+#Prune any genes that are not correlated with the core gene(s) of the gene set at a correlation coefficient >= 0.5 
+
+#First load in the composite gene sets
+GS1 <- cntO_GS
+GS2 <- sodA_GS
+GS3 <- c("PA4228", "PA4231", "PA4226", "PA4218", "PA4225", "PA4230", "PA4221", "PA4229", "PA4224", "PA4223", "PA4220")
+GS4 <- c("PA2412", "PA2413", "PA2386", "PA2394", "PA2395", "PA2397", "PA2411", "PA2385", "PA2396", "PA2427", "PA2424", "PA2425", "PA2402", "PA2400")
+GS5 <- fumC2_GS
+GS6 <- c("PA2397", "PA2392", "PA2399", "PA2386", "PA2400", "PA2402", "PA2398", "PA2427", "PA2401", "PA2396")
+GS7 <- c("PA4670", "PA1800", "PA4671", "PA4432", "PA4244", "PA4240", "PA4243", "PA0579", "PA4433", "PA1800", "PA4247", "PA3744", "PA4262", "PA4245", "PA4273")
+GS8 <- tpiA_GS
+GS9 <- vgrG4_GS
+GS10 <- norB_GS
+GS11 <- ipk_GS
+GS12 <- yidC_GS
+GS13 <- psrA_GS
+GS14 <- oprI_GS
+GS15 <- oprF_GS
+GS16 <- c("PA4762", "PA1589", "PA4385", "PA5556", "PA4386", "PA5054", "PA4269", "PA2952", "PA4761", "PA1596", "PA5053", "PA4760", "PA4542", "PA0779", "PA4061", "PA4387", "PA3126")
+GS17 <- pilA_GS
+GS18 <- c("PA1592", "PA0762", "PA5261", "PA0763", "PA2621", "PA0833", "PA3031", "PA3385", "PA3819", "PA2738", "PA2853", "PA0764", "PA0763", "PA2620", "PA1777")
+GS19 <- clpA_GS
+GS20 <- c("PA5427", "PA4067", "PA5170", "PA3337", "PA5171", "PA1789", "PA4352", "PA4328", "PA5172", "PA5173", "PA3309", "PA0141")
+GS21 <- fliC_GS
+GS22 <- PA5178_GS
+GS23 <- icd_GS
+GS24 <- lon_GS
+
+#Prune gene sets if necessary to remove poorly correlated genes (any genes not correlated with the core genes at r >= 0.5)
+
+#Start with all spike-in data - and normalize it
+Counts <- Spike_In_Data[,c(11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+
+#Simple normalization (just normalize by library size)
+Counts <- Counts
+MinVals <- apply(Counts, 1, min)
+Log_Counts <- log2(Counts[MinVals > 0,])
+
+SampleMedian <- apply(Log_Counts, 2, median) #Calculate the median of each sample
+GrandMedian <- mean(SampleMedian) #Calculate the mean of the sample medians  
+CorrectionFactors <- GrandMedian - SampleMedian #Calculate correction factors - if sample median is above the grand median, negative correction factor will be applied to all counts ; if sample median is below the grand median, a positive correction factor will be applied to all counts
+
+Norm_Counts_2 <- Log_Counts
+for(col in colnames(Log_Counts)){
+  Norm_Counts_2[, col] <- Log_Counts[,col] + CorrectionFactors[col]
+} 
+
+
+
+HM_Counts_GS1 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS1,]
+heatmap(as.matrix(HM_Counts_GS1))
+Cor <- cor(t(HM_Counts_GS1))
+corrplot(Cor, method = 'number', diag = FALSE)
+#No Pruning
+
+HM_Counts_GS2 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS2,]
+heatmap(as.matrix(HM_Counts_GS2))
+Cor <- cor(t(HM_Counts_GS2))
+corrplot(Cor, method = 'number', diag = FALSE)
+#No Pruning
+
+HM_Counts_GS3 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS3,]
+heatmap(as.matrix(HM_Counts_GS3))
+Cor <- cor(t(HM_Counts_GS3))
+corrplot(Cor, method = 'number', diag = FALSE)
+#No Pruning
+
+HM_Counts_GS4 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS4,]
+heatmap(as.matrix(HM_Counts_GS4))
+Cor <- cor(t(HM_Counts_GS4))
+corrplot(Cor, method = 'number', diag = FALSE)
+#No Pruning
+
+HM_Counts_GS5 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS5,]
+heatmap(as.matrix(HM_Counts_GS5))
+Cor <- cor(t(HM_Counts_GS5))
+corrplot(Cor, method = 'number', diag = FALSE)
+#Prune PA4972, PA5483
+
+HM_Counts_GS6 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS6,]
+heatmap(as.matrix(HM_Counts_GS6))
+Cor <- cor(t(HM_Counts_GS6))
+corrplot(Cor, method = 'number', diag = FALSE)
+#No Pruning
+
+HM_Counts_GS7 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS7,]
+heatmap(as.matrix(HM_Counts_GS7))
+Cor <- cor(t(HM_Counts_GS7))
+corrplot(Cor, method = 'number', diag = FALSE)
+#No Pruning
+
+HM_Counts_GS8 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS8,]
+heatmap(as.matrix(HM_Counts_GS8))
+Cor <- cor(t(HM_Counts_GS8))
+corrplot(Cor, method = 'number', diag = FALSE)
+#Prune PA4747
+
+HM_Counts_GS9 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS9,]
+heatmap(as.matrix(HM_Counts_GS9))
+Cor <- cor(t(HM_Counts_GS9))
+corrplot(Cor, method = 'number', diag = FALSE)
+#Prune PA2685
+
+HM_Counts_GS10 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS10,]
+heatmap(as.matrix(HM_Counts_GS10))
+Cor <- cor(t(HM_Counts_GS10))
+corrplot(Cor, method = 'number', diag = FALSE)
+#Prune PA3394
+
+HM_Counts_GS11 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS11,]
+heatmap(as.matrix(HM_Counts_GS11))
+Cor <- cor(t(HM_Counts_GS11))
+corrplot(Cor, method = 'number', diag = FALSE)
+#Prune PA0904, PA3471, PA4459, PA5045, PA5128, PA5362
+
+HM_Counts_GS12 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS12,]
+heatmap(as.matrix(HM_Counts_GS12))
+Cor <- cor(t(HM_Counts_GS12))
+corrplot(Cor, method = 'number', diag = FALSE)
+#Prune 0380, 3820, 4563, 4932
+
+HM_Counts_GS13 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS13,]
+heatmap(as.matrix(HM_Counts_GS13))
+Cor <- cor(t(HM_Counts_GS13))
+corrplot(Cor, method = 'number', diag = FALSE)
+#Prune PA3013
+
+HM_Counts_GS14 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS14,]
+heatmap(as.matrix(HM_Counts_GS14))
+Cor <- cor(t(HM_Counts_GS14))
+corrplot(Cor, method = 'number', diag = FALSE)
+#Prune PA0376, PA0456, PA1777, PA2742, PA4922
+
+HM_Counts_GS15 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS15,]
+heatmap(as.matrix(HM_Counts_GS15))
+Cor <- cor(t(HM_Counts_GS15))
+corrplot(Cor, method = 'number', diag = FALSE)
+#Prune 0139, 1802, 2853
+
+HM_Counts_GS16 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS16,]
+heatmap(as.matrix(HM_Counts_GS16))
+Cor <- cor(t(HM_Counts_GS16))
+corrplot(Cor, method = 'number', diag = FALSE)
+#Prune 2952, 4269, 4387, 5556, 1589
+
+HM_Counts_GS17 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS17,]
+heatmap(as.matrix(HM_Counts_GS17))
+Cor <- cor(t(HM_Counts_GS17))
+corrplot(Cor, method = 'number', diag = FALSE)
+#Prune 2735, 2736
+
+HM_Counts_GS18 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS18,]
+heatmap(as.matrix(HM_Counts_GS18))
+Cor <- cor(t(HM_Counts_GS18))
+corrplot(Cor, method = 'number', diag = FALSE)
+#Prune 0764, 0833, 1777, 2620, 2621, 2853, 3031
+
+HM_Counts_GS19 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS19,]
+heatmap(as.matrix(HM_Counts_GS19))
+Cor <- cor(t(HM_Counts_GS19))
+corrplot(Cor, method = 'number', diag = FALSE)
+#Prune 0763, 1454, 3349, 4751
+
+HM_Counts_GS20 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS20,]
+heatmap(as.matrix(HM_Counts_GS20))
+Cor <- cor(t(HM_Counts_GS20))
+corrplot(Cor, method = 'number', diag = FALSE)
+#No Pruning
+
+HM_Counts_GS21 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS21,]
+heatmap(as.matrix(HM_Counts_GS21))
+Cor <- cor(t(HM_Counts_GS21))
+corrplot(Cor, method = 'number', diag = FALSE)
+#Prune 1086, 1087, 1088, 1089, 1090
+
+HM_Counts_GS22 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS22,]
+heatmap(as.matrix(HM_Counts_GS22))
+Cor <- cor(t(HM_Counts_GS22))
+corrplot(Cor, method = 'number', diag = FALSE)
+#No Pruning
+
+HM_Counts_GS23 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS23,]
+heatmap(as.matrix(HM_Counts_GS23))
+Cor <- cor(t(HM_Counts_GS23))
+corrplot(Cor, method = 'number', diag = FALSE)
+#Prune 1583, 2623, 2951, 2952, 4751
+
+HM_Counts_GS24 <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS24,]
+heatmap(as.matrix(HM_Counts_GS24))
+Cor <- cor(t(HM_Counts_GS24))
+corrplot(Cor, method = 'number', diag = FALSE)
+#Prune 4751
+
+
+```
+
+Redefine gene sets (pruned versions)
+```{r}
+GS1_P <- c("PA5535", "PA4065", "PA4837", "PA4834", "PA4836", "PA5536", "PA5540", "PA1922", "PA4835", "PA0781")
+GS2_P <- c("PA4467", "PA4570", "PA4468", "PA2034", "PA4469", "PA4471", "PA2033", "PA3407", "PA4470", "PA0672")
+GS3_P <- c("PA4228", "PA4231", "PA4226", "PA4218", "PA4225", "PA4230", "PA4221", "PA4229", "PA4224", "PA4223", "PA4220")
+GS4_P <- c("PA2412", "PA2413", "PA2386", "PA2394", "PA2395", "PA2397", "PA2411", "PA2385", "PA2396", "PA2427", "PA2424", "PA2425", "PA2402", "PA2400")
+GS5_P <- c("PA1323", "PA2071", "PA0853", "PA3691", "PA3692", "PA0854", "PA4876", "PA1324")
+GS6_P <- c("PA2397", "PA2392", "PA2399", "PA2386", "PA2400", "PA2402", "PA2398", "PA2427", "PA2401", "PA2396")
+GS7_P <- c("PA4670", "PA1800", "PA4671", "PA4432", "PA4244", "PA4240", "PA4243", "PA0579", "PA4433", "PA1800", "PA4247", "PA3744", "PA4262", "PA4245", "PA4273")
+GS8_P <- c("PA2970", "PA4746", "PA4748", "PA2971", "PA4276", "PA3744", "PA1800", "PA3745", "PA3743")
+GS9_P <- c("PA0080", "PA0086", "PA0085", "PA2684", "PA0088", "PA0082", "PA0076", "PA0087", "PA0084")
+GS10_P <- c("PA0521", "PA0520", "PA0524", "PA0514", "PA0523", "PA3391", "PA3393", "PA0525", "PA3392")
+GS11_P <- c("PA0767", "PA4669", "PA2627", "PA4449")
+GS12_P <- c("PA5568", "PA4480", "PA4665", "PA3827", "PA3821", "PA3822")
+GS13_P <- c("PA0506", "PA3006", "PA3014", "PA2953")
+GS14_P <- c("PA1592", "PA2853", "PA0456", "PA5253", "PA0376", "PA2966", "PA4922", "PA2738")
+GS15_P <- c("PA2743", "PA1777", "PA4265", "PA2742", "PA4922", "PA4237", "PA4407")
+GS16_P <- c("PA4762", "PA4385", "PA4386", "PA5054", "PA4761", "PA1596", "PA5053", "PA4760", "PA4542", "PA0779", "PA4061", "PA3126")
+GS17_P <- c("PA2730", "PA4527", "PA4525", "PA2732", "PA2731", "PA1939", "PA2733", "PA2734")
+GS18_P <- c("PA1592", "PA0762", "PA5261", "PA0763", "PA3385", "PA3819", "PA2738", "PA0763")
+GS19_P <- c("PA2620", "PA1802", "PA2622", "PA2621", "PA1728", "PA2586")
+GS20_P <- c("PA5427", "PA4067", "PA5170", "PA3337", "PA5171", "PA1789", "PA4352", "PA4328", "PA5172", "PA5173", "PA0141")
+GS21_P <- c("PA1093", "PA1092", "PA1095", "PA1094", "PA1096")
+GS22_P <- c("PA5060", "PA2622", "PA5178", "PA5288", "PA0329", "PA3040", "PA3031", "PA5212", "PA1592", "PA4607")
+GS23_P <- c("PA1580", "PA2623", "PA5013", "PA4407", "PA4944")
+GS24_P <- c("PA4943", "PA1803", "PA4386", "PA1802", "PA3813", "PA1847", "PA4944", "PA4385", "PA4761")
+
+#Check for duplicate gene set similarity 
+GS_Similarity_List <- list(GS1_P, GS2_P, GS3_P, GS4_P, GS5_P, GS6_P, GS7_P, GS8_P, GS9_P, GS10_P, GS11_P, GS12_P, GS13_P, GS14_P, GS15_P, GS16_P, GS17_P, GS18_P, GS19_P, GS20_P, GS21_P, GS22_P, GS23_P, GS24_P)
+
+for (i in 1:length(GS_Similarity_List)) {
+  for (j in 1:length(GS_Similarity_List)) {
+    print(paste0(i,j))
+    print(table(GS_Similarity_List[[i]] %in% GS_Similarity_List[[j]]))
+  }
+}
+
+#List out any two gene sets with overlapping genes
+
+#4,6: 8 false, 6 true
+#6,4: 4 false, 6 true
+
+#7,8: 12 false, 2 true
+#8,7: 7 false, 2 true
+
+#14,15: 7 false, 1 true
+#14,18: 6 false, 2 true
+#14,22: 7 false, 1 true
+#15,14: 6 false, 1 true
+#18,14: 6 false, 2 true
+#22,14: 9 false, 1 true
+
+#15,23: 6 false, 1 true
+#23,15: 4 false, 1 true
+
+#16,24: 9 false, 3 true
+#24,16: 6 false, 3 true
+
+#18,22: 7 false, 1 true
+#22,18: 9 false, 1 true
+
+#19,22: 5 false, 1 true
+#19,24: 5 false, 1 true
+#22,19:  9 false, 1 true
+#24,19: 8 false, 1 true
+
+#23,24: 4 false, 1 true
+#24,23: 8 false, 1 true
+
+
+```
+Table 3 includes all of these pruned gene sets and their component genes
+
+# Figure 2 + Tables S4,S5. Gene set activity compared between sputum (metal-treated vs. non-treated) and ASM 
+First need to calculate average gene expression for each gene set across all samples (Tables S4, S5)
+```{r}
+#Split up into smaller data frames representing each gene set
+GS1_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS1_P,]
+GS2_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS2_P,]
+GS3_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS3_P,]
+GS4_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS4_P,]
+GS5_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS5_P,]
+GS6_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS6_P,]
+GS7_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS7_P,]
+GS8_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS8_P,]
+GS9_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS9_P,]
+GS10_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS10_P,]
+GS11_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS11_P,]
+GS12_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS12_P,]
+GS13_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS13_P,]
+GS14_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS14_P,]
+GS15_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS15_P,]
+GS16_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS16_P,]
+GS17_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS17_P,]
+GS18_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS18_P,]
+GS19_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS19_P,]
+GS20_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS20_P,]
+GS21_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS21_P,]
+GS22_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS22_P,]
+GS23_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS23_P,]
+GS24_DF <- Norm_Counts_2[rownames(Norm_Counts_2) %in% GS24_P,]
+
+#Now calculate the mean activation of the gene set across all samples
+GS1_Score <- apply(GS1_DF, 2, mean)
+GS2_Score <- apply(GS2_DF, 2, mean)
+GS3_Score <- apply(GS3_DF, 2, mean)
+GS4_Score <- apply(GS4_DF, 2, mean)
+GS5_Score <- apply(GS5_DF, 2, mean)
+GS6_Score <- apply(GS6_DF, 2, mean)
+GS7_Score <- apply(GS7_DF, 2, mean)
+GS8_Score <- apply(GS8_DF, 2, mean)
+GS9_Score <- apply(GS9_DF, 2, mean)
+GS10_Score <- apply(GS10_DF, 2, mean)
+GS11_Score <- apply(GS11_DF, 2, mean)
+GS12_Score <- apply(GS12_DF, 2, mean)
+GS13_Score <- apply(GS13_DF, 2, mean)
+GS14_Score <- apply(GS14_DF, 2, mean)
+GS15_Score <- apply(GS15_DF, 2, mean)
+GS16_Score <- apply(GS16_DF, 2, mean)
+GS17_Score <- apply(GS17_DF, 2, mean)
+GS18_Score <- apply(GS18_DF, 2, mean)
+GS19_Score <- apply(GS19_DF, 2, mean)
+GS20_Score <- apply(GS20_DF, 2, mean)
+GS21_Score <- apply(GS21_DF, 2, mean)
+GS22_Score <- apply(GS22_DF, 2, mean)
+GS23_Score <- apply(GS23_DF, 2, mean)
+GS24_Score <- apply(GS24_DF, 2, mean)
+
+#Create data object to compare average expression across samples
+Media_Group <- c(rep(c("ASM_Metal", "ASM"), 3), rep("M63", 3), rep(c("Sputum_Metal", "Sputum"), 17))
+
+Media_Comparison_DF <- data.frame(GS1_Score, GS2_Score, GS3_Score, GS4_Score, GS5_Score, GS6_Score, GS7_Score, GS8_Score, GS9_Score, GS10_Score, GS11_Score, GS12_Score, GS13_Score, GS14_Score, GS15_Score, GS16_Score, GS17_Score, GS18_Score, GS19_Score, GS20_Score, GS21_Score, GS22_Score, GS23_Score, GS24_Score, Media_Group)
+
+colnames(Media_Comparison_DF) <- c("GS1", "GS2", "GS3", "GS4", "GS5", "GS6", "GS7", "GS8", "GS9", "GS10", "GS11", "GS12", "GS13", "GS14", "GS15", "GS16", "GS17", "GS18", "GS19", "GS20", "GS21", "GS22", "GS23", "GS24", "Media_Group")
+
+View(Media_Comparison_DF)
+
+#Calculate mean gene set activation across all the CF sputum samples
+GS1_medians <- tapply(Media_Comparison_DF$GS1, Media_Comparison_DF$Media_Group, median)
+GS2_medians <- tapply(Media_Comparison_DF$GS2, Media_Comparison_DF$Media_Group, median)
+GS3_medians <- tapply(Media_Comparison_DF$GS3, Media_Comparison_DF$Media_Group, median)
+GS4_medians <- tapply(Media_Comparison_DF$GS4, Media_Comparison_DF$Media_Group, median)
+GS5_medians <- tapply(Media_Comparison_DF$GS5, Media_Comparison_DF$Media_Group, median)
+GS6_medians <- tapply(Media_Comparison_DF$GS6, Media_Comparison_DF$Media_Group, median)
+GS7_medians <- tapply(Media_Comparison_DF$GS7, Media_Comparison_DF$Media_Group, median)
+GS8_medians <- tapply(Media_Comparison_DF$GS8, Media_Comparison_DF$Media_Group, median)
+GS9_medians <- tapply(Media_Comparison_DF$GS9, Media_Comparison_DF$Media_Group, median)
+GS10_medians <- tapply(Media_Comparison_DF$GS10, Media_Comparison_DF$Media_Group, median)
+GS11_medians <- tapply(Media_Comparison_DF$GS11, Media_Comparison_DF$Media_Group, median)
+GS12_medians <- tapply(Media_Comparison_DF$GS12, Media_Comparison_DF$Media_Group, median)
+GS13_medians <- tapply(Media_Comparison_DF$GS13, Media_Comparison_DF$Media_Group, median)
+GS14_medians <- tapply(Media_Comparison_DF$GS14, Media_Comparison_DF$Media_Group, median)
+GS15_medians <- tapply(Media_Comparison_DF$GS15, Media_Comparison_DF$Media_Group, median)
+GS16_medians <- tapply(Media_Comparison_DF$GS16, Media_Comparison_DF$Media_Group, median)
+GS17_medians <- tapply(Media_Comparison_DF$GS17, Media_Comparison_DF$Media_Group, median)
+GS18_medians <- tapply(Media_Comparison_DF$GS18, Media_Comparison_DF$Media_Group, median)
+GS19_medians <- tapply(Media_Comparison_DF$GS19, Media_Comparison_DF$Media_Group, median)
+GS20_medians <- tapply(Media_Comparison_DF$GS20, Media_Comparison_DF$Media_Group, median)
+GS21_medians <- tapply(Media_Comparison_DF$GS21, Media_Comparison_DF$Media_Group, median)
+GS22_medians <- tapply(Media_Comparison_DF$GS22, Media_Comparison_DF$Media_Group, median)
+GS23_medians <- tapply(Media_Comparison_DF$GS23, Media_Comparison_DF$Media_Group, median)
+GS24_medians <- tapply(Media_Comparison_DF$GS24, Media_Comparison_DF$Media_Group, median)
+
+#Export tables S4 and S5
+ST4 <- Media_Comparison_DF[c(2,4,6,11:43),]
+write.csv(ST4, "TableS4.csv")
+
+#Table S5
+Activation_DF <- rbind(GS1_medians, GS2_medians, GS3_medians, GS4_medians, GS5_medians, GS6_medians, GS7_medians, GS8_medians, GS9_medians, GS10_medians, GS11_medians, GS12_medians, GS13_medians, GS14_medians, GS15_medians, GS16_medians, GS17_medians, GS18_medians, GS19_medians, GS20_medians, GS21_medians, GS22_medians, GS23_medians, GS24_medians)
+
+Activation_DF <- Activation_DF[,c(-2,-3,-5)] #Just keep untreated sputum and ASM samples
+write.csv(Activation_DF, "TableS5.csv") #Further modified in excel to add a 'Sputum - ASM' column to show the difference in median activity between the two groups
+
+```
+
+Z-score comparison (Figure 2A)
+```{r}
+All2Mat <- as.matrix(t(Media_Comparison_DF[c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43),1:24])) #Keep just ASM and untreated sputum samples
+
+rownames(All2Mat)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+heatmap.2(All2Mat, trace = "none", scale = "row")
+
+pdf("ExpMapSet.pdf", width = 10, height = 10)
+heatmap.2(All2Mat, trace = "none", scale = "row")
+dev.off()
+
+```
+
+metal-treated vs. non-treated (Figures 2B, 2C) 
+```{r}
+#Figure 2B and C focus on gene sets 1 and 4 - additional heatmaps for all gene sets are provided in supplemental figure S3
+
+GS1_DF_HMX <- GS1_DF[,c(2,4,6,10:43)]
+colnames(GS1_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS4_DF_HMX <- GS4_DF[,c(2,4,6,10:43)]
+colnames(GS4_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+heatmap(as.matrix(GS1_DF_HMX), xlab = "Gene Set 1")
+heatmap(as.matrix(GS4_DF_HMX), xlab = "Gene Set 4")
+
+```
+
+
+# Figure 3, Figure S1, Table S6. Metal treatment modifies expression of metal aquisition gene sets to levels seen in ASM
+
+First, the boxplots (panels A,D,G,J)
+```{r}
+View(Media_Comparison_DF[10:43,]) #gather just the sputum samples - metal treated and non-treated
+Media_Comparison_DF_2 <- Media_Comparison_DF[10:43,]
+
+GS1_Treated <- Media_Comparison_DF_2$GS1[c(TRUE,FALSE)]
+GS1_Not_Treated <- Media_Comparison_DF_2$GS1[c(FALSE,TRUE)]
+
+GS2_Treated <- Media_Comparison_DF_2$GS2[c(TRUE,FALSE)]
+GS2_Not_Treated <- Media_Comparison_DF_2$GS2[c(FALSE,TRUE)]
+
+GS3_Treated <- Media_Comparison_DF_2$GS3[c(TRUE,FALSE)]
+GS3_Not_Treated <- Media_Comparison_DF_2$GS3[c(FALSE,TRUE)]
+
+GS4_Treated <- Media_Comparison_DF_2$GS4[c(TRUE,FALSE)]
+GS4_Not_Treated <- Media_Comparison_DF_2$GS4[c(FALSE,TRUE)]
+
+GS5_Treated <- Media_Comparison_DF_2$GS5[c(TRUE,FALSE)]
+GS5_Not_Treated <- Media_Comparison_DF_2$GS5[c(FALSE,TRUE)]
+
+GS6_Treated <- Media_Comparison_DF_2$GS6[c(TRUE,FALSE)]
+GS6_Not_Treated <- Media_Comparison_DF_2$GS6[c(FALSE,TRUE)]
+
+GS7_Treated <- Media_Comparison_DF_2$GS7[c(TRUE,FALSE)]
+GS7_Not_Treated <- Media_Comparison_DF_2$GS7[c(FALSE,TRUE)]
+
+GS8_Treated <- Media_Comparison_DF_2$GS8[c(TRUE,FALSE)]
+GS8_Not_Treated <- Media_Comparison_DF_2$GS8[c(FALSE,TRUE)]
+
+GS9_Treated <- Media_Comparison_DF_2$GS9[c(TRUE,FALSE)]
+GS9_Not_Treated <- Media_Comparison_DF_2$GS9[c(FALSE,TRUE)]
+
+GS10_Treated <- Media_Comparison_DF_2$GS10[c(TRUE,FALSE)]
+GS10_Not_Treated <- Media_Comparison_DF_2$GS10[c(FALSE,TRUE)]
+
+GS11_Treated <- Media_Comparison_DF_2$GS11[c(TRUE,FALSE)]
+GS11_Not_Treated <- Media_Comparison_DF_2$GS11[c(FALSE,TRUE)]
+
+GS12_Treated <- Media_Comparison_DF_2$GS12[c(TRUE,FALSE)]
+GS12_Not_Treated <- Media_Comparison_DF_2$GS12[c(FALSE,TRUE)]
+
+GS13_Treated <- Media_Comparison_DF_2$GS13[c(TRUE,FALSE)]
+GS13_Not_Treated <- Media_Comparison_DF_2$GS13[c(FALSE,TRUE)]
+
+GS14_Treated <- Media_Comparison_DF_2$GS14[c(TRUE,FALSE)]
+GS14_Not_Treated <- Media_Comparison_DF_2$GS14[c(FALSE,TRUE)]
+
+GS15_Treated <- Media_Comparison_DF_2$GS15[c(TRUE,FALSE)]
+GS15_Not_Treated <- Media_Comparison_DF_2$GS15[c(FALSE,TRUE)]
+
+GS16_Treated <- Media_Comparison_DF_2$GS16[c(TRUE,FALSE)]
+GS16_Not_Treated <- Media_Comparison_DF_2$GS16[c(FALSE,TRUE)]
+
+GS17_Treated <- Media_Comparison_DF_2$GS17[c(TRUE,FALSE)]
+GS17_Not_Treated <- Media_Comparison_DF_2$GS17[c(FALSE,TRUE)]
+
+GS18_Treated <- Media_Comparison_DF_2$GS18[c(TRUE,FALSE)]
+GS18_Not_Treated <- Media_Comparison_DF_2$GS18[c(FALSE,TRUE)]
+
+GS19_Treated <- Media_Comparison_DF_2$GS19[c(TRUE,FALSE)]
+GS19_Not_Treated <- Media_Comparison_DF_2$GS19[c(FALSE,TRUE)]
+
+GS20_Treated <- Media_Comparison_DF_2$GS20[c(TRUE,FALSE)]
+GS20_Not_Treated <- Media_Comparison_DF_2$GS20[c(FALSE,TRUE)]
+
+GS21_Treated <- Media_Comparison_DF_2$GS21[c(TRUE,FALSE)]
+GS21_Not_Treated <- Media_Comparison_DF_2$GS21[c(FALSE,TRUE)]
+
+GS22_Treated <- Media_Comparison_DF_2$GS22[c(TRUE,FALSE)]
+GS22_Not_Treated <- Media_Comparison_DF_2$GS22[c(FALSE,TRUE)]
+
+GS23_Treated <- Media_Comparison_DF_2$GS23[c(TRUE,FALSE)]
+GS23_Not_Treated <- Media_Comparison_DF_2$GS23[c(FALSE,TRUE)]
+
+GS24_Treated <- Media_Comparison_DF_2$GS24[c(TRUE,FALSE)]
+GS24_Not_Treated <- Media_Comparison_DF_2$GS24[c(FALSE,TRUE)]
+
+###
+
+Sample_Names <- c("Spu102", "Spu106", "Spu108", "Spu120", "Spu122", "Spu124", "Spu125", "Spu133", "Spu138", "Spu145", "Spu153", "Spu203", "Spu204", "Spu220", "Spu233", "Spu239","Spu243")
+
+###
+
+GS1_Treatment_DF <- data.frame(Sample_Names, GS1_Not_Treated, GS1_Treated)
+colnames(GS1_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS2_Treatment_DF <- data.frame(Sample_Names, GS2_Not_Treated, GS2_Treated)
+colnames(GS2_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS3_Treatment_DF <- data.frame(Sample_Names, GS3_Not_Treated, GS3_Treated)
+colnames(GS3_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS4_Treatment_DF <- data.frame(Sample_Names, GS4_Not_Treated, GS4_Treated)
+colnames(GS4_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS5_Treatment_DF <- data.frame(Sample_Names, GS5_Not_Treated, GS5_Treated)
+colnames(GS5_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS6_Treatment_DF <- data.frame(Sample_Names, GS6_Not_Treated, GS6_Treated)
+colnames(GS6_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS7_Treatment_DF <- data.frame(Sample_Names, GS7_Not_Treated, GS7_Treated)
+colnames(GS7_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS8_Treatment_DF <- data.frame(Sample_Names, GS8_Not_Treated, GS8_Treated)
+colnames(GS8_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS9_Treatment_DF <- data.frame(Sample_Names, GS9_Not_Treated, GS9_Treated)
+colnames(GS9_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS10_Treatment_DF <- data.frame(Sample_Names, GS10_Not_Treated, GS10_Treated)
+colnames(GS10_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS11_Treatment_DF <- data.frame(Sample_Names, GS11_Not_Treated, GS11_Treated)
+colnames(GS11_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS12_Treatment_DF <- data.frame(Sample_Names, GS12_Not_Treated, GS12_Treated)
+colnames(GS12_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS13_Treatment_DF <- data.frame(Sample_Names, GS13_Not_Treated, GS13_Treated)
+colnames(GS13_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS14_Treatment_DF <- data.frame(Sample_Names, GS14_Not_Treated, GS14_Treated)
+colnames(GS14_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS15_Treatment_DF <- data.frame(Sample_Names, GS15_Not_Treated, GS15_Treated)
+colnames(GS15_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS16_Treatment_DF <- data.frame(Sample_Names, GS16_Not_Treated, GS16_Treated)
+colnames(GS16_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS17_Treatment_DF <- data.frame(Sample_Names, GS17_Not_Treated, GS17_Treated)
+colnames(GS17_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS18_Treatment_DF <- data.frame(Sample_Names, GS18_Not_Treated, GS18_Treated)
+colnames(GS18_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS19_Treatment_DF <- data.frame(Sample_Names, GS19_Not_Treated, GS19_Treated)
+colnames(GS19_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS20_Treatment_DF <- data.frame(Sample_Names, GS20_Not_Treated, GS20_Treated)
+colnames(GS20_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS21_Treatment_DF <- data.frame(Sample_Names, GS21_Not_Treated, GS21_Treated)
+colnames(GS21_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS22_Treatment_DF <- data.frame(Sample_Names, GS22_Not_Treated, GS22_Treated)
+colnames(GS22_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS23_Treatment_DF <- data.frame(Sample_Names, GS23_Not_Treated, GS23_Treated)
+colnames(GS23_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+GS24_Treatment_DF <- data.frame(Sample_Names, GS24_Not_Treated, GS24_Treated)
+colnames(GS24_Treatment_DF) <- c("Sample Name", "Not Treated", "Metal Treated")
+
+###
+
+#Calculate median activation across ASM samples for each gene set
+
+GS1_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),1])
+GS2_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),2])
+GS3_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),3])
+GS4_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),4])
+GS5_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),5])
+GS6_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),6])
+GS7_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),7])
+GS8_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),8])
+GS9_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),9])
+GS10_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),10])
+GS11_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),11])
+GS12_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),12])
+GS13_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),13])
+GS14_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),14])
+GS15_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),15])
+GS16_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),16])
+GS17_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),17])
+GS18_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),18])
+GS19_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),19])
+GS20_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),20])
+GS21_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),21])
+GS22_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),22])
+GS23_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),23])
+GS24_ASM_Med <- median(Media_Comparison_DF[c(2,4,6),24])
+
+###
+
+#Create the boxplots
+ggpaired(GS1_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS1 Score") + geom_hline(yintercept = GS1_ASM_Med, colour = "red")
+
+ggpaired(GS2_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS2 Score") + geom_hline(yintercept = GS2_ASM_Med, colour = "red")
+
+ggpaired(GS3_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS3 Score") + geom_hline(yintercept = GS3_ASM_Med, colour = "red")
+
+ggpaired(GS4_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS4 Score") + geom_hline(yintercept = GS4_ASM_Med, colour = "red")
+
+ggpaired(GS5_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS5 Score") + geom_hline(yintercept = GS5_ASM_Med, colour = "red")
+
+ggpaired(GS6_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS6 Score") + geom_hline(yintercept = GS6_ASM_Med, colour = "red")
+
+ggpaired(GS7_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS7 Score") + geom_hline(yintercept = GS7_ASM_Med, colour = "red")
+
+ggpaired(GS8_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS8 Score") + geom_hline(yintercept = GS8_ASM_Med, colour = "red")
+
+ggpaired(GS9_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS9 Score") + geom_hline(yintercept = GS9_ASM_Med, colour = "red")
+
+ggpaired(GS10_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS10 Score") + geom_hline(yintercept = GS10_ASM_Med, colour = "red")
+
+ggpaired(GS11_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS11 Score") + geom_hline(yintercept = GS11_ASM_Med, colour = "red")
+
+ggpaired(GS12_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS12 Score") + geom_hline(yintercept = GS12_ASM_Med, colour = "red")
+
+ggpaired(GS13_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS13 Score") + geom_hline(yintercept = GS13_ASM_Med, colour = "red")
+
+ggpaired(GS14_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS14 Score") + geom_hline(yintercept = GS14_ASM_Med, colour = "red")
+
+ggpaired(GS15_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS15 Score") + geom_hline(yintercept = GS15_ASM_Med, colour = "red")
+
+ggpaired(GS16_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS16 Score") + geom_hline(yintercept = GS16_ASM_Med, colour = "red")
+
+ggpaired(GS17_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS17 Score") + geom_hline(yintercept = GS17_ASM_Med, colour = "red")
+
+ggpaired(GS18_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS18 Score") + geom_hline(yintercept = GS18_ASM_Med, colour = "red")
+
+ggpaired(GS19_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS19 Score") + geom_hline(yintercept = GS19_ASM_Med, colour = "red")
+
+ggpaired(GS20_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS20 Score") + geom_hline(yintercept = GS20_ASM_Med, colour = "red")
+
+ggpaired(GS21_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS21 Score") + geom_hline(yintercept = GS21_ASM_Med, colour = "red")
+
+ggpaired(GS22_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS22 Score") + geom_hline(yintercept = GS22_ASM_Med, colour = "red")
+
+ggpaired(GS23_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS23 Score") + geom_hline(yintercept = GS23_ASM_Med, colour = "red")
+
+ggpaired(GS24_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS24 Score") + geom_hline(yintercept = GS24_ASM_Med, colour = "red")
+
+### (Just the boxplots for figure 3)
+
+ggpaired(GS1_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS1 Score") + geom_hline(yintercept = GS1_ASM_Med, colour = "red") + theme(plot.margin = margin(1, 5, 1, 5, "cm"))
+
+ggpaired(GS2_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS2 Score") + geom_hline(yintercept = GS2_ASM_Med, colour = "red") + theme(plot.margin = margin(1, 5, 1, 5, "cm"))
+
+ggpaired(GS3_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS3 Score") + geom_hline(yintercept = GS3_ASM_Med, colour = "red") + theme(plot.margin = margin(1, 5, 1, 5, "cm"))
+
+ggpaired(GS4_Treatment_DF, cond1 = "Not Treated", cond2 = "Metal Treated",
+    fill = "condition", palette = "jco", ylab = "GS4 Score") + geom_hline(yintercept = GS4_ASM_Med, colour = "red") + theme(plot.margin = margin(1, 5, 1, 5, "cm"))
+```
+
+Create edgeR object:
+```{r}
+View(Spike_In_Data) #all spike-in samples (including ASM and M63, sputum with or without metal treatment)
+DGE <- DGEList(counts = Spike_In_Data, remove.zeros = TRUE, genes = rownames(Spike_In_Data))
+DGE$samples
+```
+
+Define sample groups + create design matrix:
+```{r}
+colnames(DGE$counts)
+
+Group <- factor(c(rep(c("ASM_M", "ASM"), 3), rep("M63", 3), rep(c("Spu_M", "Spu"), 17)))
+data.frame(Sample = colnames(DGE$counts), Group)
+design <- model.matrix(~ 0 + Group)
+rownames(design) <- colnames(DGE)
+design
+```
+
+Remove low expression genes and normalize by library size
+```{r}
+keep <- filterByExpr(DGE, design, min.count = 10, min.total.count = 15)
+DGE <- DGE[keep, ] # keep only well-expressed genes
+
+DGE <- calcNormFactors(DGE) # adding information to DGEList object!
+DGE$samples # normalization factors have been added
+```
+
+Estimate dispersion
+```{r}
+# calculate overall dispersion
+DGE <- estimateGLMCommonDisp(DGE, design, verbose = TRUE) 
+
+# calculate dispersion trend based on gene abundance
+DGE <- estimateGLMTrendedDisp(DGE, design) 
+
+# calculate separate dispersion for each gene
+DGE <- estimateGLMTagwiseDisp(DGE, design) 
+
+#Visualize dispersion
+plotBCV(DGE)
+
+#Visualize normalized data
+CPM <- cpm(DGE, normalized.lib.sizes = TRUE, log = TRUE)
+CPM <- as.data.frame(CPM)
+boxplot(CPM, las = 2, ylab = "log2 CPM", main = "Normalized Data")
+
+```
+
+Run differential gene expression analysis
+```{r}
+fit <- glmQLFit(DGE, design)
+colnames(fit$coefficients)
+qlf <- glmQLFTest(fit, contrast = c(0,0,0,-1,1)) #specify the comparison of interest
+topTags(qlf)
+
+#Quick sanity check - look at PA4708, PA2687, and PA4896 in the raw data - are they indeed suppressed in the metal treated samples? 
+Spike_In_Data[rownames(Spike_In_Data) == "PA4708",]
+Spike_In_Data[rownames(Spike_In_Data) == "PA2687",]
+Spike_In_Data[rownames(Spike_In_Data) == "PA4896",]
+#Oh yes - the metal treatments have quite lower counts than the non-treated samples
+
+N_Counts <- Norm_Counts_2[, c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+N_Counts <- N_Counts[rownames(N_Counts) %in% rownames(Results[c(1:10),]),]
+heatmap(as.matrix(N_Counts)) #These genes are way more expressed in ASM than sputum samples, it seems
+
+Results <- as.data.frame(topTags(qlf, n = dim(DGE)[1]))
+DE <- Results[Results$PValue < 0.05 & abs(Results$logFC) > 1, ]
+detags2 <- DE$genes
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment", xlim = c(-10, 10))
+
+points(-log10(Results$PValue[Results$genes %in% detags2]) ~ 
+        Results$logFC[Results$genes %in% detags2], 
+        col = "red", pch = 16)
+
+#An interactive plotly volcano plot
+VP <- plot_ly(type = "scatter", Results, x = Results$logFC, y = -log10(Results$PValue),text = ~paste("log2FC: ", Results$logFC, '$<br>-log10(PValue):',-log10(Results$PValue), '$<br>Locus ID:', Results$genes)) %>%
+  layout(xaxis = list(title="log2FC"), yaxis = list(title="-log10(PValue)"))
+                                                       
+VP <- add_trace(VP, x = DE$logFC, y = -log10(DE$PValue), type = "scatter", mode = "markers", size = 50, color = I("orange"), inherit = FALSE, text = ~paste("log2FC: ", DE$logFC, '$<br>-log10(PValue):', -log10(DE$PValue), '$<br>Locus ID:', DE$genes))
+                                                                                                                            
+VP      
+```
+
+Print out results for table S6
+```{r}
+#Print out results for supplemental table
+write.csv(Results, "Table S6.csv")
+```
+
+
+Now volcano plots showing which individual genes are differentially expressed in metal-treated vs. non-treated samples (panels B,E,H,K)
+```{r}
+DE_GS1 <- Results[Results$genes %in% GS1_P,]
+DE_GS2 <- Results[Results$genes %in% GS2_P,]
+DE_GS3 <- Results[Results$genes %in% GS3_P,]
+DE_GS4 <- Results[Results$genes %in% GS4_P,]
+DE_GS5 <- Results[Results$genes %in% GS5_P,]
+DE_GS6 <- Results[Results$genes %in% GS6_P,]
+DE_GS7 <- Results[Results$genes %in% GS7_P,]
+DE_GS8 <- Results[Results$genes %in% GS8_P,]
+DE_GS9 <- Results[Results$genes %in% GS9_P,]
+DE_GS10 <- Results[Results$genes %in% GS10_P,]
+DE_GS11 <- Results[Results$genes %in% GS11_P,]
+DE_GS12 <- Results[Results$genes %in% GS12_P,]
+DE_GS13 <- Results[Results$genes %in% GS13_P,]
+DE_GS14 <- Results[Results$genes %in% GS14_P,]
+DE_GS15 <- Results[Results$genes %in% GS15_P,]
+DE_GS16 <- Results[Results$genes %in% GS16_P,]
+DE_GS17 <- Results[Results$genes %in% GS17_P,]
+DE_GS18 <- Results[Results$genes %in% GS18_P,]
+DE_GS19 <- Results[Results$genes %in% GS19_P,]
+DE_GS20 <- Results[Results$genes %in% GS20_P,]
+DE_GS21 <- Results[Results$genes %in% GS21_P,]
+DE_GS22 <- Results[Results$genes %in% GS22_P,]
+DE_GS23 <- Results[Results$genes %in% GS23_P,]
+DE_GS24 <- Results[Results$genes %in% GS24_P,]
+
+
+###
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS1", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS1$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS1$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS2", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS2$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS2$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS3", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS3$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS3$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS4", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS4$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS4$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS5", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS5$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS5$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS6", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS6$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS6$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS7", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS7$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS7$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS8", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS8$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS8$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS9", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS9$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS9$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS10", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS10$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS10$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS11", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS11$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS11$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS12", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS12$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS12$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS13", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS13$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS13$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS14", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS14$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS14$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS15", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS15$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS15$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS16", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS16$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS16$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS17", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS17$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS17$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS18", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS18$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS18$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS19", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS19$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS19$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS20", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS20$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS20$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS21", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS21$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS21$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS22", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS22$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS22$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS23", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS23$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS23$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS24", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS24$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS24$genes], 
+        col = "red", pch = 16)
+
+###
+
+#Color borders around genes in regulons of interest 
+Zur_Regulon <- c("PA5499", "PA5500", "PA5501", "PA0781", "PA3601", "PA3600", "PA5536", "PA5535", "PA5534", "PA4838", "PA5537", "PA5539", "PA5540", "PA5541", "PA5538", "PA4063", "PA5498")
+
+Pvd_Regulon <- c("PA2385", "PA2386", "PA2389", "PA2390", "PA2392", "PA2394", "PA2395", "PA2396", "PA2397", "PA2399", "PA2400", "PA2413", "PA2424", "PA2425")
+
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS1", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS1$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS1$genes], 
+        col = "red", pch = 16)
+points(-log10(Results$PValue[Results$genes %in% Zur_Regulon]) ~ 
+        Results$logFC[Results$genes %in% Zur_Regulon], 
+        col = "blue", pch = 23)
+
+plot(-log10(Results$PValue) ~ Results$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Effect of Metal Treatment - GS4", xlim = c(-10, 10))
+points(-log10(Results$PValue[Results$genes %in% DE_GS4$genes]) ~ 
+        Results$logFC[Results$genes %in% DE_GS4$genes], 
+        col = "red", pch = 16)
+points(-log10(Results$PValue[Results$genes %in% Pvd_Regulon]) ~ 
+        Results$logFC[Results$genes %in% Pvd_Regulon], 
+        col = "blue", pch = 23)
+
+```
+
+And the volcano plots showing which individual genes are differentially expressed in CF sputum vs. ASM (panels C,F,I,L)
+```{r}
+fitX <- glmQLFit(DGE, design)
+colnames(fitX$coefficients)
+qlfX <- glmQLFTest(fitX, contrast = c(-1,0,0,1,0)) #specify the comparison of interest
+topTags(qlfX)
+
+ResultsX <- as.data.frame(topTags(qlfX, n = dim(DGE)[1]))
+DEX <- ResultsX[ResultsX$PValue < 0.05 & abs(ResultsX$logFC) > 1, ]
+
+
+###
+
+DE_GS1X <- ResultsX[ResultsX$genes %in% GS1_P,]
+DE_GS2X <- ResultsX[ResultsX$genes %in% GS2_P,]
+DE_GS3X <- ResultsX[ResultsX$genes %in% GS3_P,]
+DE_GS4X <- ResultsX[ResultsX$genes %in% GS4_P,]
+DE_GS5X <- ResultsX[ResultsX$genes %in% GS5_P,]
+DE_GS6X <- ResultsX[ResultsX$genes %in% GS6_P,]
+DE_GS7X <- ResultsX[ResultsX$genes %in% GS7_P,]
+DE_GS8X <- ResultsX[ResultsX$genes %in% GS8_P,]
+DE_GS9X <- ResultsX[ResultsX$genes %in% GS9_P,]
+DE_GS10X <- ResultsX[ResultsX$genes %in% GS10_P,]
+DE_GS11X <- ResultsX[ResultsX$genes %in% GS11_P,]
+DE_GS12X <- ResultsX[ResultsX$genes %in% GS12_P,]
+DE_GS13X <- ResultsX[ResultsX$genes %in% GS13_P,]
+DE_GS14X <- ResultsX[ResultsX$genes %in% GS14_P,]
+DE_GS15X <- ResultsX[ResultsX$genes %in% GS15_P,]
+DE_GS16X <- ResultsX[ResultsX$genes %in% GS16_P,]
+DE_GS17X <- ResultsX[ResultsX$genes %in% GS17_P,]
+DE_GS18X <- ResultsX[ResultsX$genes %in% GS18_P,]
+DE_GS19X <- ResultsX[ResultsX$genes %in% GS19_P,]
+DE_GS20X <- ResultsX[ResultsX$genes %in% GS20_P,]
+DE_GS21X <- ResultsX[ResultsX$genes %in% GS21_P,]
+DE_GS22X <- ResultsX[ResultsX$genes %in% GS22_P,]
+DE_GS23X <- ResultsX[ResultsX$genes %in% GS23_P,]
+DE_GS24X <- ResultsX[ResultsX$genes %in% GS24_P,]
+
+###
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS1", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS1X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS1X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS2", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS2X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS2X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS3", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS3X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS3X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS4", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS4X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS4X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS5", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS5X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS5X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS6", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS6X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS6X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS7", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS7X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS7X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS8", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS8X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS8X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS9", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS9X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS9X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS10", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS10X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS10X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS11", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS11X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS11X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS12", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS12X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS12X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS13", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS13X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS13X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS14", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS14X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS14X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS15", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS15X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS15X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS16", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS16X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS16X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS17", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS17X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS17X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS18", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS18X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS18X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS19", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS19X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS19X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS20", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS20X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS20X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS21", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS21X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS21X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS22", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS22X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS22X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS23", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS23X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS23X$genes], 
+        col = "red", pch = 16)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS24", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS24X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS24X$genes], 
+        col = "red", pch = 16)
+
+###
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS1", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS1X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS1X$genes], 
+        col = "red", pch = 16)
+points(-log10(ResultsX$PValue[ResultsX$genes %in% Zur_Regulon]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% Zur_Regulon], 
+        col = "blue", pch = 23)
+
+plot(-log10(ResultsX$PValue) ~ ResultsX$logFC, 
+     xlab = "log2 fold change", ylab = "-log10 p-value", 
+     main = "Sputum vs. ASM Comparison - GS4", xlim = c(-10, 10))
+points(-log10(ResultsX$PValue[ResultsX$genes %in% DE_GS4X$genes]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% DE_GS4X$genes], 
+        col = "red", pch = 16)
+points(-log10(ResultsX$PValue[ResultsX$genes %in% Pvd_Regulon]) ~ 
+        ResultsX$logFC[ResultsX$genes %in% Pvd_Regulon], 
+        col = "blue", pch = 23)
+```
+
+
+
+
+
+
+# Figure 4. Examining correlations in gene set activity across samples 
+
+Look at just sputum samples, not metal treated
+```{r}
+Media_Comparison_DF_3 <- Media_Comparison_DF_2[c(2,4,6,8,10,12,14,16,18,20,22,24,26,28,30,32,34),]
+View(Media_Comparison_DF_3)
+```
+
+Visualize with a correlation plot (4A)
+```{r}
+Cor <- cor(Media_Comparison_DF_5[,c(1:24)], method = "pearson")
+corrplot(Cor, method = 'square', diag = FALSE, order = 'hclust', tl.pos = 'd')
+
+
+png(filename = "GS_Corr.png", width = 2000, height = 1000)
+corrplot(Cor, method = 'square', diag = FALSE, order = 'hclust', tl.pos = 'd')
+dev.off()
+```
+
+Scatterplots demonstrating correlation of individual gene sets (4B, 4C)
+```{r}
+Outliers <- rownames(Media_Comparison_DF_3[c(6,13,16),])
+
+LMX <- lm(Media_Comparison_DF_3$`GS9` ~ Media_Comparison_DF_3$`GS2`)
+plot(Media_Comparison_DF_3$`GS9` ~ Media_Comparison_DF_3$`GS2`, xlab = "Average Expression - Gene Set 2", ylab = "Average Expression - Gene Set 9")
+abline(LMX)
+points(Media_Comparison_DF_3$`GS9`[rownames(Media_Comparison_DF_3) %in% Outliers] ~ 
+        Media_Comparison_DF_3$`GS2`[rownames(Media_Comparison_DF_3) %in% Outliers], 
+        col = "red", pch = 16)
+
+LMX <- lm(Media_Comparison_DF_3$`GS8` ~ Media_Comparison_DF_3$`GS2`)
+plot(Media_Comparison_DF_3$`GS8` ~ Media_Comparison_DF_3$`GS2`, xlab = "Average Expression - Gene Set 2", ylab = "Average Expression - Gene Set 8")
+abline(LMX)
+points(Media_Comparison_DF_3$`GS8`[rownames(Media_Comparison_DF_3) %in% Outliers] ~ 
+        Media_Comparison_DF_3$`GS2`[rownames(Media_Comparison_DF_3) %in% Outliers], 
+        col = "red", pch = 16)
+```
+
+
+
+
+# Figure S2. GO term activation analysis for metal treated vs. non-treated CF sputum samples
+Results from figure S6 (specifically, the gene IDs and fold changes) were loaded into the ESKAPE Act application to produce figure S2. The gene IDs were converted from PA locus IDs to Uniprot IDs first using the Uniprot ID Mapper tool (as indicated in the code for Figure 1B)
+
+# Figure S3. Heatmaps demonstrating the expression of individual genes in gene sets across CF sputum (metal-treated + untreated) and ASM samples
+
+Look at ASM vs. CF sputum
+```{r}
+#Set up GS data frames for visualization:
+
+GS1_DF_HM <- GS1_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS1_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS2_DF_HM <- GS2_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS2_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS3_DF_HM <- GS3_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS3_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS4_DF_HM <- GS4_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS4_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS5_DF_HM <- GS5_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS5_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS6_DF_HM <- GS6_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS6_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS7_DF_HM <- GS7_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS7_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS8_DF_HM <- GS8_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS8_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS9_DF_HM <- GS9_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS9_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS10_DF_HM <- GS10_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS10_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS11_DF_HM <- GS11_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS11_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS12_DF_HM <- GS12_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS12_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS13_DF_HM <- GS13_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS13_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS14_DF_HM <- GS14_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS14_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS15_DF_HM <- GS15_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS15_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS16_DF_HM <- GS16_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS16_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS17_DF_HM <- GS17_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS17_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS18_DF_HM <- GS18_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS18_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS19_DF_HM <- GS19_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS19_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS20_DF_HM <- GS20_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS20_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS21_DF_HM <- GS21_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS21_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS22_DF_HM <- GS22_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS22_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS23_DF_HM <- GS23_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS23_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+GS24_DF_HM <- GS24_DF[,c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43)]
+colnames(GS24_DF_HM)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+
+###
+
+heatmap(as.matrix(GS1_DF_HM), xlab = "Gene Set 1")
+heatmap(as.matrix(GS2_DF_HM), xlab = "Gene Set 2")
+heatmap(as.matrix(GS3_DF_HM), xlab = "Gene Set 3")
+heatmap(as.matrix(GS4_DF_HM), xlab = "Gene Set 4")
+heatmap(as.matrix(GS5_DF_HM), xlab = "Gene Set 5")
+heatmap(as.matrix(GS6_DF_HM), xlab = "Gene Set 6")
+heatmap(as.matrix(GS7_DF_HM), xlab = "Gene Set 7")
+heatmap(as.matrix(GS8_DF_HM), xlab = "Gene Set 8")
+heatmap(as.matrix(GS9_DF_HM), xlab = "Gene Set 9")
+heatmap(as.matrix(GS10_DF_HM), xlab = "Gene Set 10")
+heatmap(as.matrix(GS11_DF_HM), xlab = "Gene Set 11")
+heatmap(as.matrix(GS12_DF_HM), xlab = "Gene Set 12")
+heatmap(as.matrix(GS13_DF_HM), xlab = "Gene Set 13")
+heatmap(as.matrix(GS14_DF_HM), xlab = "Gene Set 14")
+heatmap(as.matrix(GS15_DF_HM), xlab = "Gene Set 15")
+heatmap(as.matrix(GS16_DF_HM), xlab = "Gene Set 16")
+heatmap(as.matrix(GS17_DF_HM), xlab = "Gene Set 17")
+heatmap(as.matrix(GS18_DF_HM), xlab = "Gene Set 18")
+heatmap(as.matrix(GS19_DF_HM), xlab = "Gene Set 19")
+heatmap(as.matrix(GS20_DF_HM), xlab = "Gene Set 20")
+heatmap(as.matrix(GS21_DF_HM), xlab = "Gene Set 21")
+heatmap(as.matrix(GS22_DF_HM), xlab = "Gene Set 22")
+heatmap(as.matrix(GS23_DF_HM), xlab = "Gene Set 23")
+heatmap(as.matrix(GS24_DF_HM), xlab = "Gene Set 24")
+
+```
+
+Look at CF sputum vs. metal
+```{r}
+GS1_DF_HMX <- GS1_DF[,c(2,4,6,10:43)]
+colnames(GS1_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS2_DF_HMX <- GS2_DF[,c(2,4,6,10:43)]
+colnames(GS2_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS3_DF_HMX <- GS3_DF[,c(2,4,6,10:43)]
+colnames(GS3_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS4_DF_HMX <- GS4_DF[,c(2,4,6,10:43)]
+colnames(GS4_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS5_DF_HMX <- GS5_DF[,c(2,4,6,10:43)]
+colnames(GS5_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS6_DF_HMX <- GS6_DF[,c(2,4,6,10:43)]
+colnames(GS6_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS7_DF_HMX <- GS7_DF[,c(2,4,6,10:43)]
+colnames(GS7_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS8_DF_HMX <- GS8_DF[,c(2,4,6,10:43)]
+colnames(GS8_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS9_DF_HMX <- GS9_DF[,c(2,4,6,10:43)]
+colnames(GS9_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS10_DF_HMX <- GS10_DF[,c(2,4,6,10:43)]
+colnames(GS10_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS11_DF_HMX <- GS11_DF[,c(2,4,6,10:43)]
+colnames(GS12_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS13_DF_HMX <- GS13_DF[,c(2,4,6,10:43)]
+colnames(GS13_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS14_DF_HMX <- GS14_DF[,c(2,4,6,10:43)]
+colnames(GS14_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS15_DF_HMX <- GS15_DF[,c(2,4,6,10:43)]
+colnames(GS15_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS16_DF_HMX <- GS16_DF[,c(2,4,6,10:43)]
+colnames(GS16_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS17_DF_HMX <- GS17_DF[,c(2,4,6,10:43)]
+colnames(GS17_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS18_DF_HMX <- GS18_DF[,c(2,4,6,10:43)]
+colnames(GS18_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS19_DF_HMX <- GS19_DF[,c(2,4,6,10:43)]
+colnames(GS19_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS20_DF_HMX <- GS20_DF[,c(2,4,6,10:43)]
+colnames(GS20_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS21_DF_HMX <- GS21_DF[,c(2,4,6,10:43)]
+colnames(GS21_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS22_DF_HMX <- GS22_DF[,c(2,4,6,10:43)]
+colnames(GS22_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS23_DF_HMX <- GS23_DF[,c(2,4,6,10:43)]
+colnames(GS23_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+GS24_DF_HMX <- GS24_DF[,c(2,4,6,10:43)]
+colnames(GS24_DF_HMX)[1:3] <- c("ASM1", "ASM2", "ASM3")
+
+heatmap(as.matrix(GS1_DF_HMX), xlab = "Gene Set 1")
+heatmap(as.matrix(GS2_DF_HMX), xlab = "Gene Set 2")
+heatmap(as.matrix(GS3_DF_HMX), xlab = "Gene Set 3")
+heatmap(as.matrix(GS4_DF_HMX), xlab = "Gene Set 4")
+heatmap(as.matrix(GS5_DF_HMX), xlab = "Gene Set 5")
+heatmap(as.matrix(GS6_DF_HMX), xlab = "Gene Set 6")
+heatmap(as.matrix(GS7_DF_HMX), xlab = "Gene Set 7")
+heatmap(as.matrix(GS8_DF_HMX), xlab = "Gene Set 8")
+heatmap(as.matrix(GS9_DF_HMX), xlab = "Gene Set 9")
+heatmap(as.matrix(GS10_DF_HMX), xlab = "Gene Set 10")
+heatmap(as.matrix(GS11_DF_HMX), xlab = "Gene Set 11")
+heatmap(as.matrix(GS12_DF_HMX), xlab = "Gene Set 12")
+heatmap(as.matrix(GS13_DF_HMX), xlab = "Gene Set 13")
+heatmap(as.matrix(GS14_DF_HMX), xlab = "Gene Set 14")
+heatmap(as.matrix(GS15_DF_HMX), xlab = "Gene Set 15")
+heatmap(as.matrix(GS16_DF_HMX), xlab = "Gene Set 16")
+heatmap(as.matrix(GS17_DF_HMX), xlab = "Gene Set 17")
+heatmap(as.matrix(GS18_DF_HMX), xlab = "Gene Set 18")
+heatmap(as.matrix(GS19_DF_HMX), xlab = "Gene Set 19")
+heatmap(as.matrix(GS20_DF_HMX), xlab = "Gene Set 20")
+heatmap(as.matrix(GS21_DF_HMX), xlab = "Gene Set 21")
+heatmap(as.matrix(GS22_DF_HMX), xlab = "Gene Set 22")
+heatmap(as.matrix(GS23_DF_HMX), xlab = "Gene Set 23")
+heatmap(as.matrix(GS24_DF_HMX), xlab = "Gene Set 24")
+
+
+```
+
+
+#Figure S4. Gene sets screened against a separate compendium of PAO1 samples to check for continued correlation
+```{r}
+#First, load in the PAO1 compendium
+PAO1_Compendium <- read.csv("./Data_Files/pao1_sample_compendium.csv")
+
+#Flip data frame so that rows are genes and columns are samples
+PAO1_Compendium <- t(PAO1_Compendium)
+colnames(PAO1_Compendium) <- PAO1_Compendium[1,]
+PAO1_Compendium <- PAO1_Compendium[-1,]
+PAO1_Compendium <- as.data.frame(PAO1_Compendium)
+for (i in 1:ncol(PAO1_Compendium)) {
+  PAO1_Compendium[,i] <- as.numeric(PAO1_Compendium[,i])
+}
+View(PAO1_Compendium)
+barplot(colSums(PAO1_Compendium[,1:50])) #Should normalize samples by library size so it is more sensible to compare genes across samples
+
+#Normalize samples by library size
+Counts <- PAO1_Compendium
+MinVals <- apply(Counts, 1, min)
+Log_Counts <- log2(Counts + 0.001)
+
+SampleMedian <- apply(Log_Counts, 2, median) #Calculate the median of each sample
+GrandMedian <- mean(SampleMedian) #Calculate the mean of the sample medians  
+CorrectionFactors <- GrandMedian - SampleMedian #Calculate correction factors - if sample median is above the grand median, negative correction factor will be applied to all counts ; if sample median is below the grand median, a positive correction factor will be applied to all counts
+
+Norm_Counts_X <- Log_Counts
+for(col in colnames(Log_Counts)){
+  Norm_Counts_X[, col] <- Log_Counts[,col] + CorrectionFactors[col]
+} 
+
+boxplot(Norm_Counts_X[,1:50]) #Data is normalized
+
+#Look at how well correlated the gene sets are across samples (borrow from table 3 code above)
+#Want to make sure that all genes in the gene sets are still positively correlated (no negative correlation coefficients in the corrplots)
+
+HM_Counts_GS1 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS1_P,]
+heatmap(as.matrix(HM_Counts_GS1))
+Cor <- cor(t(HM_Counts_GS1))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS1 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS2 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS2_P,]
+heatmap(as.matrix(HM_Counts_GS2))
+Cor <- cor(t(HM_Counts_GS2))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS2 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS3 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS3_P,]
+heatmap(as.matrix(HM_Counts_GS3))
+Cor <- cor(t(HM_Counts_GS3))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS3 Correlation", mar=c(0,0,1,0))
+#All positive 
+
+HM_Counts_GS4 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS4_P,]
+heatmap(as.matrix(HM_Counts_GS4))
+Cor <- cor(t(HM_Counts_GS4))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS4 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS5 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS5_P,]
+heatmap(as.matrix(HM_Counts_GS5))
+Cor <- cor(t(HM_Counts_GS5))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS5 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS6 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS6_P,]
+heatmap(as.matrix(HM_Counts_GS6))
+Cor <- cor(t(HM_Counts_GS6))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS6 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS7 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS7_P,]
+heatmap(as.matrix(HM_Counts_GS7))
+Cor <- cor(t(HM_Counts_GS7))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS7 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS8 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS8_P,]
+heatmap(as.matrix(HM_Counts_GS8))
+Cor <- cor(t(HM_Counts_GS8))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS8 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS9 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS9_P,]
+heatmap(as.matrix(HM_Counts_GS9))
+Cor <- cor(t(HM_Counts_GS9))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS9 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS10 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS10_P,]
+heatmap(as.matrix(HM_Counts_GS10))
+Cor <- cor(t(HM_Counts_GS10))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS10 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS11 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS11_P,]
+heatmap(as.matrix(HM_Counts_GS11))
+Cor <- cor(t(HM_Counts_GS11))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS11 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS12 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS12_P,]
+heatmap(as.matrix(HM_Counts_GS12))
+Cor <- cor(t(HM_Counts_GS12))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS12 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS13 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS13_P,]
+heatmap(as.matrix(HM_Counts_GS13))
+Cor <- cor(t(HM_Counts_GS13))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS13 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS14 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS14_P,]
+heatmap(as.matrix(HM_Counts_GS14))
+Cor <- cor(t(HM_Counts_GS14))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS14 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS15 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS15_P,]
+heatmap(as.matrix(HM_Counts_GS15))
+Cor <- cor(t(HM_Counts_GS15))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS15 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS16 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS16_P,]
+heatmap(as.matrix(HM_Counts_GS16))
+Cor <- cor(t(HM_Counts_GS16))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS16 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS17 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS17_P,]
+heatmap(as.matrix(HM_Counts_GS17))
+Cor <- cor(t(HM_Counts_GS17))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS17 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS18 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS18_P,]
+heatmap(as.matrix(HM_Counts_GS18))
+Cor <- cor(t(HM_Counts_GS18))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS18 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS19 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS19_P,]
+heatmap(as.matrix(HM_Counts_GS19))
+Cor <- cor(t(HM_Counts_GS19))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS19 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS20 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS20_P,]
+heatmap(as.matrix(HM_Counts_GS20))
+Cor <- cor(t(HM_Counts_GS20))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS20 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS21 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS21_P,]
+heatmap(as.matrix(HM_Counts_GS21))
+Cor <- cor(t(HM_Counts_GS21))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS21 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS22 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS22_P,]
+heatmap(as.matrix(HM_Counts_GS22))
+Cor <- cor(t(HM_Counts_GS22))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS22 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS23 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS23_P,]
+heatmap(as.matrix(HM_Counts_GS23))
+Cor <- cor(t(HM_Counts_GS23))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS23 Correlation", mar=c(0,0,1,0))
+#All positive
+
+HM_Counts_GS24 <- Norm_Counts_X[rownames(Norm_Counts_X) %in% GS24_P,]
+heatmap(as.matrix(HM_Counts_GS24))
+Cor <- cor(t(HM_Counts_GS24))
+corrplot(Cor, method = 'number', diag = FALSE, title = "GS24 Correlation", mar=c(0,0,1,0))
+#All positive
+```
+
+
+#Figures S5 - S7. Regression analysis to identify significant associations between gene set average expression and donor clinical parameters (see Table 1)
+
+First, look at how well donor FEV1 predicts gene set activity (Figure S5)
+```{r}
+#Gather gene set activation data
+Media_Comparison_DF_4 <- Media_Comparison_DF[c(2,4,6,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43),]
+
+View(Media_Comparison_DF_4) #This is what we want - just get rid of the ASM samples and the sputum sample for which we don't have data (102)
+
+Donor_Activation_DF_1 <- Media_Comparison_DF_4[c(5:20),]
+
+#Now just add another column for FEV1 
+#But first have to get rid of column for donor '201' in the metadata - we don't have gene set activation data for 201
+MetaFEV1 <- Metadata$FEV1[c(1:10, 12:17)]
+
+Donor_Activation_DF_1 <- cbind(Donor_Activation_DF_1, MetaFEV1)
+
+View(Donor_Activation_DF_1)
+colnames(Donor_Activation_DF_1) <- c("GS1_Score", "GS2_Score", "GS3_Score", "GS4_Score", "GS5_Score", "GS6_Score", "GS7_Score", "GS8_Score", "GS9_Score", "GS10_Score", "GS11_Score", "GS12_Score", "GS13_Score", "GS14_Score", "GS15_Score", "GS16_Score", "GS17_Score", "GS18_Score", "GS19_Score", "GS20_Score", "GS21_Score", "GS22_Score", "GS23_Score", "GS24_Score", "Media_Group", "FEV1")
+
+###
+
+#Now create a bunch of scatterplots - looking at relationship between gene set activation and FEV1
+LM1 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS1_Score)
+plot(Donor_Activation_DF_1$GS1_Score, Donor_Activation_DF_1$FEV1, xlab = "GS1 Score", ylab = "FEV1")
+abline(LM1)
+
+LM2 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS2_Score)
+plot(Donor_Activation_DF_1$GS2_Score, Donor_Activation_DF_1$FEV1, xlab = "GS2 Score", ylab = "FEV1")
+abline(LM2)
+
+LM3 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS3_Score)
+plot(Donor_Activation_DF_1$GS3_Score, Donor_Activation_DF_1$FEV1, xlab = "GS3 Score", ylab = "FEV1")
+abline(LM3)
+
+LM4 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS4_Score)
+plot(Donor_Activation_DF_1$GS4_Score, Donor_Activation_DF_1$FEV1, xlab = "GS4 Score", ylab = "FEV1")
+abline(LM4)
+
+LM5 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS5_Score)
+plot(Donor_Activation_DF_1$GS5_Score, Donor_Activation_DF_1$FEV1, xlab = "GS5 Score", ylab = "FEV1")
+abline(LM5)
+
+LM6 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS6_Score)
+plot(Donor_Activation_DF_1$GS6_Score, Donor_Activation_DF_1$FEV1, xlab = "GS6 Score", ylab = "FEV1")
+abline(LM6)
+
+LM7 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS7_Score)
+plot(Donor_Activation_DF_1$GS7_Score, Donor_Activation_DF_1$FEV1, xlab = "GS7 Score", ylab = "FEV1")
+abline(LM7)
+
+LM8 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS8_Score)
+plot(Donor_Activation_DF_1$GS8_Score, Donor_Activation_DF_1$FEV1, xlab = "GS8 Score", ylab = "FEV1")
+abline(LM8)
+
+LM9 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS9_Score)
+plot(Donor_Activation_DF_1$GS9_Score, Donor_Activation_DF_1$FEV1, xlab = "GS9 Score", ylab = "FEV1")
+abline(LM9)
+
+LM10 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS10_Score)
+plot(Donor_Activation_DF_1$GS10_Score, Donor_Activation_DF_1$FEV1, xlab = "GS10 Score", ylab = "FEV1")
+abline(LM10)
+
+LM11 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS11_Score)
+plot(Donor_Activation_DF_1$GS11_Score, Donor_Activation_DF_1$FEV1, xlab = "GS11 Score", ylab = "FEV1")
+abline(LM11)
+
+LM12 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS12_Score)
+plot(Donor_Activation_DF_1$GS12_Score, Donor_Activation_DF_1$FEV1, xlab = "GS12 Score", ylab = "FEV1")
+abline(LM12)
+
+LM13 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS13_Score)
+plot(Donor_Activation_DF_1$GS13_Score, Donor_Activation_DF_1$FEV1, xlab = "GS13 Score", ylab = "FEV1")
+abline(LM13)
+
+LM14 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS14_Score)
+plot(Donor_Activation_DF_1$GS14_Score, Donor_Activation_DF_1$FEV1, xlab = "GS14 Score", ylab = "FEV1")
+abline(LM14)
+
+LM15 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS15_Score)
+plot(Donor_Activation_DF_1$GS15_Score, Donor_Activation_DF_1$FEV1, xlab = "GS15 Score", ylab = "FEV1")
+abline(LM15)
+
+LM16 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS16_Score)
+plot(Donor_Activation_DF_1$GS16_Score, Donor_Activation_DF_1$FEV1, xlab = "GS16 Score", ylab = "FEV1")
+abline(LM16)
+
+LM17 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS17_Score)
+plot(Donor_Activation_DF_1$GS17_Score, Donor_Activation_DF_1$FEV1, xlab = "GS17 Score", ylab = "FEV1")
+abline(LM17)
+
+LM18 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS18_Score)
+plot(Donor_Activation_DF_1$GS18_Score, Donor_Activation_DF_1$FEV1, xlab = "GS18 Score", ylab = "FEV1")
+abline(LM18)
+
+LM19 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS19_Score)
+plot(Donor_Activation_DF_1$GS19_Score, Donor_Activation_DF_1$FEV1, xlab = "GS19 Score", ylab = "FEV1")
+abline(LM19)
+
+LM20 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS20_Score)
+plot(Donor_Activation_DF_1$GS20_Score, Donor_Activation_DF_1$FEV1, xlab = "GS20 Score", ylab = "FEV1")
+abline(LM20)
+
+LM21 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS21_Score)
+plot(Donor_Activation_DF_1$GS21_Score, Donor_Activation_DF_1$FEV1, xlab = "GS21 Score", ylab = "FEV1")
+abline(LM21)
+
+LM22 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS22_Score)
+plot(Donor_Activation_DF_1$GS22_Score, Donor_Activation_DF_1$FEV1, xlab = "GS22 Score", ylab = "FEV1")
+abline(LM22)
+
+LM23 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS23_Score)
+plot(Donor_Activation_DF_1$GS23_Score, Donor_Activation_DF_1$FEV1, xlab = "GS23 Score", ylab = "FEV1")
+abline(LM23)
+
+LM24 <- lm(Donor_Activation_DF_1$FEV1 ~ Donor_Activation_DF_1$GS24_Score)
+plot(Donor_Activation_DF_1$GS24_Score, Donor_Activation_DF_1$FEV1, xlab = "GS24 Score", ylab = "FEV1")
+abline(LM24)
+
+###
+
+summary(LM1)
+summary(LM2)
+summary(LM3)
+summary(LM4)
+summary(LM5)
+summary(LM6)
+summary(LM7)
+summary(LM8)
+summary(LM9)
+summary(LM10)
+summary(LM11)
+summary(LM12)
+summary(LM13)
+summary(LM14)
+summary(LM15)
+summary(LM16)
+summary(LM17)
+summary(LM18)
+summary(LM19)
+summary(LM20)
+summary(LM21)
+summary(LM22)
+summary(LM23)
+summary(LM24)
+
+#No significant P values
+
+
+```
+
+Next, how is gene set activity related to antibiotic / potentiator use? (Figure S6)
+```{r}
+View(Media_Comparison_DF_4) #Drop 102 (don't have metadata) and 106 (don't have much metadata beyond FEV1)
+
+Donor_Activation_DF_2 <- Media_Comparison_DF_4[c(6:20),]
+
+#Also have to get rid of metadata row that we don't have gene set activation data for:
+MetaTreatment <- Metadata[c(2:10, 12:17), c(3:10)]
+Donor_Activation_DF_2 <- cbind(Donor_Activation_DF_2, MetaTreatment)
+View(Donor_Activation_DF_2)
+
+colnames(Donor_Activation_DF_2)[1:24] <- c("GS1_Score", "GS2_Score", "GS3_Score", "GS4_Score", "GS5_Score", "GS6_Score", "GS7_Score", "GS8_Score", "GS9_Score", "GS10_Score", "GS11_Score", "GS12_Score", "GS13_Score", "GS14_Score", "GS15_Score", "GS16_Score", "GS17_Score", "GS18_Score", "GS19_Score", "GS20_Score", "GS21_Score", "GS22_Score", "GS23_Score", "GS24_Score")
+
+#Now start by looking at presence of inhaled antibiotics
+boxplot(Donor_Activation_DF_2$GS1_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM1A <- lm(Donor_Activation_DF_2$GS1_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS2_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM2A <- lm(Donor_Activation_DF_2$GS2_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS3_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM3A <- lm(Donor_Activation_DF_2$GS3_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS4_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM4A <- lm(Donor_Activation_DF_2$GS4_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS5_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM5A <- lm(Donor_Activation_DF_2$GS5_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS6_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM6A <- lm(Donor_Activation_DF_2$GS6_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS7_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM7A <- lm(Donor_Activation_DF_2$GS7_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS8_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM8A <- lm(Donor_Activation_DF_2$GS8_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS9_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM9A <- lm(Donor_Activation_DF_2$GS9_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS10_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM10A <- lm(Donor_Activation_DF_2$GS10_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS11_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM11A <- lm(Donor_Activation_DF_2$GS11_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS12_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM12A <- lm(Donor_Activation_DF_2$GS12_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS13_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM13A <- lm(Donor_Activation_DF_2$GS13_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS14_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM14A <- lm(Donor_Activation_DF_2$GS14_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS15_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM15A <- lm(Donor_Activation_DF_2$GS15_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS16_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM16A <- lm(Donor_Activation_DF_2$GS16_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS17_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM17A <- lm(Donor_Activation_DF_2$GS17_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS18_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM18A <- lm(Donor_Activation_DF_2$GS18_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS19_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM19A <- lm(Donor_Activation_DF_2$GS19_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS20_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM20A <- lm(Donor_Activation_DF_2$GS20_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS21_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM21A <- lm(Donor_Activation_DF_2$GS21_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS22_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM22A <- lm(Donor_Activation_DF_2$GS22_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS23_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM23A <- lm(Donor_Activation_DF_2$GS23_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+boxplot(Donor_Activation_DF_2$GS24_Score ~ Donor_Activation_DF_2$Inhaled.Abx..Y.N.)
+LM24A <- lm(Donor_Activation_DF_2$GS24_Score ~ as.factor(Donor_Activation_DF_2$Inhaled.Abx..Y.N.))
+
+###
+
+summary(LM1A)
+summary(LM2A)
+summary(LM3A)
+summary(LM4A)
+summary(LM5A)
+summary(LM6A)
+summary(LM7A)
+summary(LM8A)
+summary(LM9A)
+summary(LM10A)
+summary(LM11A)
+summary(LM12A)
+summary(LM13A)
+summary(LM14A)
+summary(LM15A)
+summary(LM16A)
+summary(LM17A)
+summary(LM18A)
+summary(LM19A)
+summary(LM20A)
+summary(LM21A)
+summary(LM22A)
+summary(LM23A)
+summary(LM24A)
+
+#None significant
+
+###
+
+#Oral Antibiotics
+for (i in 1:24) {
+  boxplot(Donor_Activation_DF_2[,i] ~ Donor_Activation_DF_2[,27])
+  LM <- lm(Donor_Activation_DF_2[,i] ~ as.factor(Donor_Activation_DF_2[,27]))
+  print(summary(LM))
+  print(i)
+}
+
+boxplot(Donor_Activation_DF_2$GS9_Score ~ Donor_Activation_DF_2$Oral.Abx..Y.N., xlab = "Oral Antibiotic Usage (Y/N)", ylab = "GS9 Score")
+  LM <- lm(Donor_Activation_DF_2$GS9_Score ~ as.factor(Donor_Activation_DF_2$Oral.Abx..Y.N.))
+  print(summary(LM))
+
+
+#Significant GS: GS9 (0.02), GS21 (0.005)
+#GS 3 is close (0.06)
+
+###
+
+#IV Antibiotics
+for (i in 1:24) {
+  boxplot(Donor_Activation_DF_2[,i] ~ Donor_Activation_DF_2[,28])
+  LM <- lm(Donor_Activation_DF_2[,i] ~ as.factor(Donor_Activation_DF_2[,28]))
+  print(summary(LM))
+  print(i)
+}
+
+#Significant GS: NA
+#GS 3 is close (0.07)
+
+###
+
+#Inhaled Cayston
+for (i in 1:24) {
+  boxplot(Donor_Activation_DF_2[,i] ~ Donor_Activation_DF_2[,29])
+  LM <- lm(Donor_Activation_DF_2[,i] ~ as.factor(Donor_Activation_DF_2[,29]))
+  print(summary(LM))
+  print(i)
+}
+
+#Significant GS: 17 (0.04)
+#GS15 is close (0.07)
+
+###
+
+#Oral Azithromycin
+for (i in 1:24) {
+  boxplot(Donor_Activation_DF_2[,i] ~ Donor_Activation_DF_2[,30])
+  LM <- lm(Donor_Activation_DF_2[,i] ~ as.factor(Donor_Activation_DF_2[,30]))
+  print(summary(LM))
+  print(i)
+}
+
+#Significant GS: 9 (0.02)
+#GS12 is close (0.07), 16 is close (0.08)
+  
+boxplot(Donor_Activation_DF_2$GS9_Score ~ Donor_Activation_DF_2$Oral.Azithromycin..Y.N., xlab = "Oral Azithromycin Usage (Y/N)", ylab = "GS9 Score")
+  LM <- lm(Donor_Activation_DF_2$GS9_Score ~ as.factor(Donor_Activation_DF_2$Oral.Azithromycin..Y.N.))
+  print(summary(LM))
+  
+
+###
+
+#IV Ceftazidime
+for (i in 1:24) {
+  boxplot(Donor_Activation_DF_2[,i] ~ Donor_Activation_DF_2[,31])
+  LM <- lm(Donor_Activation_DF_2[,i] ~ as.factor(Donor_Activation_DF_2[,31]))
+  print(summary(LM))
+  print(i)
+}
+
+#Significant GS: NA
+
+###
+
+#IV Tobramycin
+for (i in 1:24) {
+  boxplot(Donor_Activation_DF_2[,i] ~ Donor_Activation_DF_2[,32])
+  LM <- lm(Donor_Activation_DF_2[,i] ~ as.factor(Donor_Activation_DF_2[,32]))
+  print(summary(LM))
+  print(i)
+}
+
+boxplot(Donor_Activation_DF_2$GS1_Score ~ Donor_Activation_DF_2$IV.Tobramycin..Y.N., xlab = "IV Tobramycin Usage (Y/N)", ylab = "GS1 Score")
+  LM <- lm(Donor_Activation_DF_2$GS1_Score ~ as.factor(Donor_Activation_DF_2$IV.Tobramycin..Y.N.))
+  print(summary(LM))
+  
+boxplot(Donor_Activation_DF_2$GS2_Score ~ Donor_Activation_DF_2$IV.Tobramycin..Y.N., xlab = "IV Tobramycin Usage (Y/N)", ylab = "GS2 Score")
+  LM <- lm(Donor_Activation_DF_2$GS2_Score ~ as.factor(Donor_Activation_DF_2$IV.Tobramycin..Y.N.))
+  print(summary(LM))
+  
+boxplot(Donor_Activation_DF_2$GS4_Score ~ Donor_Activation_DF_2$IV.Tobramycin..Y.N., xlab = "IV Tobramycin Usage (Y/N)", ylab = "GS4 Score")
+  LM <- lm(Donor_Activation_DF_2$GS4_Score ~ as.factor(Donor_Activation_DF_2$IV.Tobramycin..Y.N.))
+  print(summary(LM))
+  
+boxplot(Donor_Activation_DF_2$GS6_Score ~ Donor_Activation_DF_2$IV.Tobramycin..Y.N., xlab = "IV Tobramycin Usage (Y/N)", ylab = "GS6 Score")
+  LM <- lm(Donor_Activation_DF_2$GS6_Score ~ as.factor(Donor_Activation_DF_2$IV.Tobramycin..Y.N.))
+  print(summary(LM))
+  
+#Significant GS: 1 (0.02), 2 (0.01), 4 (0.02), 5 (0.05), 6 (0.02)
+
+  
+
+###
+
+#Potentiator Therapy
+for (i in 1:24) {
+  boxplot(Donor_Activation_DF_2[,i] ~ Donor_Activation_DF_2[,33])
+  LM <- lm(Donor_Activation_DF_2[,i] ~ as.factor(Donor_Activation_DF_2[,33]))
+  print(summary(LM))
+  print(i)
+}
+
+#Significant GS: 9 (0.0009), 15 (0.02)
+#GS 23 is close (0.051)
+
+boxplot(Donor_Activation_DF_2$GS9_Score ~ Donor_Activation_DF_2$Potentiator.Therapy..Y.N., xlab = "Potentiator Usage (Y/N)", ylab = "GS9 Score")
+  LM <- lm(Donor_Activation_DF_2$GS9_Score ~ as.factor(Donor_Activation_DF_2$Potentiator.Therapy..Y.N.))
+  print(summary(LM))
+```
+
+And how is gene set activity related to metal concentration (Figure S7)
+```{r}
+#Read in metal concentration data
+Metal_Conc <- read.csv("./Data_Files/Metal_Concentrations.csv")
+View(Metal_Conc)
+
+#Data Setup
+View(Metal_Conc)
+Metal_Conc_2 <- Metal_Conc[1:21,c(2,4:17)]
+rownames(Metal_Conc_2) <- Metal_Conc_2[,1]
+Metal_Conc_2 <- Metal_Conc_2[,-1]
+Log_Metals <- log2(Metal_Conc_2+0.001)
+View(Log_Metals)
+
+#Need to work this data into a single object
+Media_Comparison_X <- Media_Comparison_DF_4
+
+Media_Comparison_X$Names <- rownames(Media_Comparison_X)
+Log_Metals$Names <- rownames(Log_Metals)
+
+Media_Comparison_X$Names <- c("ASM1", "ASM2", "ASM3", 102, 106, 108, 120, 122, 124, 125, 133, 138, 145, 153, 203, 204, 220, 233, 239, 243)
+Log_Metals$Names
+
+View(Media_Comparison_X)
+View(Log_Metals)
+
+Media_Comparison_Metals <- merge(Media_Comparison_X, Log_Metals, by = "Names")
+View(Media_Comparison_Metals)
+
+colnames(Media_Comparison_Metals)[2:25] <- c("GS1_Score", "GS2_Score", "GS3_Score", "GS4_Score", "GS5_Score", "GS6_Score", "GS7_Score", "GS8_Score", "GS9_Score", "GS10_Score", "GS11_Score", "GS12_Score", "GS13_Score", "GS14_Score", "GS15_Score", "GS16_Score", "GS17_Score", "GS18_Score", "GS19_Score", "GS20_Score", "GS21_Score", "GS22_Score", "GS23_Score", "GS24_Score")
+
+#Test for associations
+LMZN1 <- lm(Media_Comparison_Metals$GS1_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS1_Score, xlab = "Zn Concentration", ylab = "GS1 Score")
+abline(LMZN1)
+
+Outliers <- c(124,204,239)
+
+LMZN2 <- lm(Media_Comparison_Metals$GS2_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS2_Score, xlab = "Zn Concentration", ylab = "GS2 Score")
+abline(LMZN2)
+points(Media_Comparison_Metals$GS2_Score[Media_Comparison_Metals$Names %in% Outliers] ~ 
+        Media_Comparison_Metals$Zn[Media_Comparison_Metals$Names %in% Outliers], 
+        col = "red", pch = 16)
+
+
+LMZN3 <- lm(Media_Comparison_Metals$GS3_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS3_Score, xlab = "Zn Concentration", ylab = "GS3 Score")
+abline(LMZN3)
+
+LMZN4 <- lm(Media_Comparison_Metals$GS4_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS4_Score, xlab = "Zn Concentration", ylab = "GS4 Score")
+abline(LMZN4)
+
+LMZN5 <- lm(Media_Comparison_Metals$GS5_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS5_Score, xlab = "Zn Concentration", ylab = "GS5 Score")
+abline(LMZN5)
+
+LMZN6 <- lm(Media_Comparison_Metals$GS6_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS6_Score, xlab = "Zn Concentration", ylab = "GS6 Score")
+abline(LMZN6)
+
+LMZN7 <- lm(Media_Comparison_Metals$GS7_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS7_Score, xlab = "Zn Concentration", ylab = "GS7 Score")
+abline(LMZN7)
+
+LMZN8 <- lm(Media_Comparison_Metals$GS8_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS8_Score, xlab = "Zn Concentration", ylab = "GS8 Score")
+abline(LMZN8)
+
+LMZN9 <- lm(Media_Comparison_Metals$GS9_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS9_Score, xlab = "Zn Concentration", ylab = "GS9 Score")
+abline(LMZN9)
+
+LMZN10 <- lm(Media_Comparison_Metals$GS10_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS10_Score, xlab = "Zn Concentration", ylab = "GS10 Score")
+abline(LMZN10)
+
+LMZN11 <- lm(Media_Comparison_Metals$GS11_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS11_Score, xlab = "Zn Concentration", ylab = "GS11 Score")
+abline(LMZN11)
+
+LMZN12 <- lm(Media_Comparison_Metals$GS12_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS12_Score, xlab = "Zn Concentration", ylab = "GS12 Score")
+abline(LMZN12)
+
+LMZN13 <- lm(Media_Comparison_Metals$GS13_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS13_Score, xlab = "Zn Concentration", ylab = "GS13 Score")
+abline(LMZN13)
+
+LMZN14 <- lm(Media_Comparison_Metals$GS14_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS14_Score, xlab = "Zn Concentration", ylab = "GS14 Score")
+abline(LMZN14)
+
+LMZN15 <- lm(Media_Comparison_Metals$GS15_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS15_Score, xlab = "Zn Concentration", ylab = "GS15 Score")
+abline(LMZN15)
+
+LMZN16 <- lm(Media_Comparison_Metals$GS16_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS16_Score, xlab = "Zn Concentration", ylab = "GS16 Score")
+abline(LMZN16)
+
+LMZN17 <- lm(Media_Comparison_Metals$GS17_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS17_Score, xlab = "Zn Concentration", ylab = "GS17 Score")
+abline(LMZN17)
+
+LMZN18 <- lm(Media_Comparison_Metals$GS18_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS18_Score, xlab = "Zn Concentration", ylab = "GS18 Score")
+abline(LMZN18)
+
+LMZN19 <- lm(Media_Comparison_Metals$GS19_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS19_Score, xlab = "Zn Concentration", ylab = "GS19 Score")
+abline(LMZN19)
+
+LMZN20 <- lm(Media_Comparison_Metals$GS20_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS20_Score, xlab = "Zn Concentration", ylab = "GS20 Score")
+abline(LMZN20)
+
+LMZN21 <- lm(Media_Comparison_Metals$GS21_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS21_Score, xlab = "Zn Concentration", ylab = "GS21 Score")
+abline(LMZN21)
+
+LMZN22 <- lm(Media_Comparison_Metals$GS22_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS22_Score, xlab = "Zn Concentration", ylab = "GS22 Score")
+abline(LMZN22)
+
+LMZN23 <- lm(Media_Comparison_Metals$GS23_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS23_Score, xlab = "Zn Concentration", ylab = "GS23 Score")
+abline(LMZN23)
+
+LMZN24 <- lm(Media_Comparison_Metals$GS24_Score ~ Media_Comparison_Metals$Zn)
+plot(Media_Comparison_Metals$Zn, Media_Comparison_Metals$GS24_Score, xlab = "Zn Concentration", ylab = "GS24 Score")
+abline(LMZN24)
+
+summary(LMZN1) #0.001
+summary(LMZN2) #4.2 x 10^-5
+summary(LMZN3) #9.3 x 10^-5
+summary(LMZN4) #6.7 x 10^-5
+summary(LMZN5) #NS
+summary(LMZN6) #0.0001
+summary(LMZN7) #0.02
+summary(LMZN8) #0.03
+summary(LMZN9) #0.05
+summary(LMZN10) #NS
+summary(LMZN11) #0.06
+summary(LMZN12) #0.006
+summary(LMZN13) #NS
+summary(LMZN14) #NS
+summary(LMZN15) #0.02
+summary(LMZN16) #0.01
+summary(LMZN17) #NS
+summary(LMZN18) #0.06 
+summary(LMZN19) #0.05
+summary(LMZN20) #0.05
+summary(LMZN21) #0.004
+summary(LMZN22) #NS
+summary(LMZN23) #NS
+summary(LMZN24) #NS
+
+###
+
+LMFE1 <- lm(Media_Comparison_Metals$GS1_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS1_Score, xlab = "FE Concentration", ylab = "GS1 Score")
+abline(LMFE1)
+
+LMFE2 <- lm(Media_Comparison_Metals$GS2_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS2_Score, xlab = "FE Concentration", ylab = "GS2 Score")
+abline(LMFE2)
+points(Media_Comparison_Metals$GS2_Score[Media_Comparison_Metals$Names %in% Outliers] ~ 
+        Media_Comparison_Metals$Fe[Media_Comparison_Metals$Names %in% Outliers], 
+        col = "red", pch = 16)
+
+
+LMFE3 <- lm(Media_Comparison_Metals$GS3_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS3_Score, xlab = "FE Concentration", ylab = "GS3 Score")
+abline(LMFE3)
+
+LMFE4 <- lm(Media_Comparison_Metals$GS4_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS4_Score, xlab = "FE Concentration", ylab = "GS4 Score")
+abline(LMFE4)
+
+LMFE5 <- lm(Media_Comparison_Metals$GS5_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS5_Score, xlab = "FE Concentration", ylab = "GS5 Score")
+abline(LMFE5)
+
+LMFE6 <- lm(Media_Comparison_Metals$GS6_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS6_Score, xlab = "FE Concentration", ylab = "GS6 Score")
+abline(LMFE6)
+
+LMFE7 <- lm(Media_Comparison_Metals$GS7_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS7_Score, xlab = "FE Concentration", ylab = "GS7 Score")
+abline(LMFE7)
+
+LMFE8 <- lm(Media_Comparison_Metals$GS8_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS8_Score, xlab = "FE Concentration", ylab = "GS8 Score")
+abline(LMFE8)
+
+LMFE9 <- lm(Media_Comparison_Metals$GS9_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS9_Score, xlab = "FE Concentration", ylab = "GS9 Score")
+abline(LMFE9)
+
+LMFE10 <- lm(Media_Comparison_Metals$GS10_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS10_Score, xlab = "FE Concentration", ylab = "GS10 Score")
+abline(LMFE10)
+
+LMFE11 <- lm(Media_Comparison_Metals$GS11_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS11_Score, xlab = "FE Concentration", ylab = "GS11 Score")
+abline(LMFE11)
+
+LMFE12 <- lm(Media_Comparison_Metals$GS12_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS12_Score, xlab = "FE Concentration", ylab = "GS12 Score")
+abline(LMFE12)
+
+LMFE13 <- lm(Media_Comparison_Metals$GS13_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS13_Score, xlab = "FE Concentration", ylab = "GS13 Score")
+abline(LMFE13)
+
+LMFE14 <- lm(Media_Comparison_Metals$GS14_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS14_Score, xlab = "FE Concentration", ylab = "GS14 Score")
+abline(LMFE14)
+
+LMFE15 <- lm(Media_Comparison_Metals$GS15_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS15_Score, xlab = "FE Concentration", ylab = "GS15 Score")
+abline(LMFE15)
+
+LMFE16 <- lm(Media_Comparison_Metals$GS16_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS16_Score, xlab = "FE Concentration", ylab = "GS16 Score")
+abline(LMFE16)
+
+LMFE17 <- lm(Media_Comparison_Metals$GS17_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS17_Score, xlab = "FE Concentration", ylab = "GS17 Score")
+abline(LMFE17)
+
+LMFE18 <- lm(Media_Comparison_Metals$GS18_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS18_Score, xlab = "FE Concentration", ylab = "GS18 Score")
+abline(LMFE18)
+
+LMFE19 <- lm(Media_Comparison_Metals$GS19_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS19_Score, xlab = "FE Concentration", ylab = "GS19 Score")
+abline(LMFE19)
+
+LMFE20 <- lm(Media_Comparison_Metals$GS20_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS20_Score, xlab = "FE Concentration", ylab = "GS20 Score")
+abline(LMFE20)
+
+LMFE21 <- lm(Media_Comparison_Metals$GS21_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS21_Score, xlab = "FE Concentration", ylab = "GS21 Score")
+abline(LMFE21)
+
+LMFE22 <- lm(Media_Comparison_Metals$GS22_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS22_Score, xlab = "FE Concentration", ylab = "GS22 Score")
+abline(LMFE22)
+
+LMFE23 <- lm(Media_Comparison_Metals$GS23_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS23_Score, xlab = "FE Concentration", ylab = "GS23 Score")
+abline(LMFE23)
+
+LMFE24 <- lm(Media_Comparison_Metals$GS24_Score ~ Media_Comparison_Metals$Fe)
+plot(Media_Comparison_Metals$Fe, Media_Comparison_Metals$GS24_Score, xlab = "FE Concentration", ylab = "GS24 Score")
+abline(LMFE24)
+
+summary(LMFE1) #0.03
+summary(LMFE2) #0.02
+summary(LMFE3) #0.006
+summary(LMFE4) #0.02
+summary(LMFE5) #NS
+summary(LMFE6) #0.03
+summary(LMFE7) #NS
+summary(LMFE8) #NS
+summary(LMFE9) #0.01
+summary(LMFE10) #NS
+summary(LMFE11) #NS
+summary(LMFE12) #NS
+summary(LMFE13) #NS
+summary(LMFE14) #NS
+summary(LMFE15) #NS
+summary(LMFE16) #NS
+summary(LMFE17) #NS
+summary(LMFE18) #NS
+summary(LMFE19) #NS
+summary(LMFE20) #NS
+summary(LMFE21) #NS
+summary(LMFE22) #NS
+summary(LMFE23) #NS
+summary(LMFE24) #NS
+```
+
+FDR Correction Analysis
+```{r}
+#Oral Antibiotics ~ gene set 9
+Oral_P <- vector(mode = "list", length = 24)
+
+for (i in 1:24) {
+  boxplot(Donor_Activation_DF_2[,i] ~ Donor_Activation_DF_2[,28])
+  LM <- lm(Donor_Activation_DF_2[,i] ~ as.factor(Donor_Activation_DF_2[,28]))
+  print(summary(LM))
+  Oral_P[i] <- summary(LM)$coefficients[2,4]
+  print(i)
+}
+
+#Oral Azithromycin ~ gene set 9
+OralA_P <- vector(mode = "list", length = 24)
+
+for (i in 1:24) {
+  boxplot(Donor_Activation_DF_2[,i] ~ Donor_Activation_DF_2[,31])
+  LM <- lm(Donor_Activation_DF_2[,i] ~ as.factor(Donor_Activation_DF_2[,31]))
+  print(summary(LM))
+  OralA_P[i] <- summary(LM)$coefficients[2,4]
+  print(i)
+}
+
+#Potentiator Usage ~ gene set 9
+Pot_P <- vector(mode = "list", length = 24)
+
+for (i in 1:24) {
+  boxplot(Donor_Activation_DF_2[,i] ~ Donor_Activation_DF_2[,34])
+  LM <- lm(Donor_Activation_DF_2[,i] ~ as.factor(Donor_Activation_DF_2[,34]))
+  print(summary(LM))
+  Pot_P[i] <- summary(LM)$coefficients[2,4]
+  print(i)
+}
+
+#IV Tobramycin ~ Metal acquisition gene sets
+Tob_P <- vector(mode = "list", length = 24)
+
+for (i in 1:24) {
+  boxplot(Donor_Activation_DF_2[,i] ~ Donor_Activation_DF_2[,33])
+  LM <- lm(Donor_Activation_DF_2[,i] ~ as.factor(Donor_Activation_DF_2[,33]))
+  print(summary(LM))
+  Tob_P[i] <- summary(LM)$coefficients[2,4]
+  print(i)
+}
+
+#Metal concentration - Metal acquisition gene sets
+Zn_P <- vector(mode = "list", length = 24)
+
+for (i in 1:24) {
+  plot(Media_Comparison_Metals[,i+1] ~ Media_Comparison_Metals$Zn)
+  LM <- lm(Media_Comparison_Metals[,i+1] ~ Media_Comparison_Metals$Zn)
+  print(summary(LM))
+  Zn_P[i] <- summary(LM)$coefficients[2,4]
+  print(i)
+}
+
+Fe_P <- vector(mode = "list", length = 24)
+
+for (i in 1:24) {
+  plot(Media_Comparison_Metals[,i+1] ~ Media_Comparison_Metals$Fe)
+  LM <- lm(Media_Comparison_Metals[,i+1] ~ Media_Comparison_Metals$Fe)
+  print(summary(LM))
+  Fe_P[i] <- summary(LM)$coefficients[2,4]
+  print(i)
+}
+
+
+p.adjust(unlist(Oral_P), method = "fdr")
+p.adjust(unlist(OralA_P), method = "fdr")
+p.adjust(unlist(Pot_P), method = "fdr")
+p.adjust(unlist(Tob_P), method = "fdr")
+
+p.adjust(unlist(Zn_P), method = "fdr")
+p.adjust(unlist(Fe_P), method = "fdr")
+```
+
+
