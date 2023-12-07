@@ -18,13 +18,9 @@ In this repository, we have made available our source code and data. The whole s
 - Data_Files: Folder containing the necessary raw data to run the Figure Production.Rmd script successfully. This includes the raw count data for all the samples described in the paper, the concentrations of metals in the samples, the correlated gene sets identified by ADAGE, and gene ID mappings for P. aeruginosa (P. aeruginosa gene locus ID – Uniprot ID – gene function – GO terms)
 - Paper Analysis.Rproj: The R project file associated with the code and data files. If running the code on your own personal computer, it is easiest to download Figure Production.Rmd, the Data_Files folder, and Paper Analysis.Rproj into the same directory. Simply clicking the Paper Analysis.Rproj file will open a session where the script has access to the data files and no re-arrangement of files is necessary.
 
-**Primary Tables**
-
-- This folder contains primary tables 2 and 3 from the manuscript. Table 1 is a donor metadata table that was small enough to be included within the paper itself. 
-
 **Supplementary Material**
 
-- This folder contains all the supplementary tables (S1-S5) and the document of supplementary figures (S1-S8) featured in the manuscript.
+- This folder contains all the supplementary tables (S1-S6) and the document of supplementary figures (S1-S8) featured in the manuscript.
 
 **Processing Sputum RNASeq**
 
